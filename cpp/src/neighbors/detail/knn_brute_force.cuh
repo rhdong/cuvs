@@ -38,6 +38,7 @@
 #include <raft/linalg/map.cuh>
 #include <raft/linalg/norm.cuh>
 #include <raft/linalg/transpose.cuh>
+#include <raft/sparse/linalg/masked_matmul.hpp>
 #include <raft/matrix/init.cuh>
 #include <raft/sparse/convert/coo.cuh>
 #include <raft/sparse/convert/csr.cuh>
@@ -622,50 +623,18 @@ void brute_force_search_filtered(
                                    nullptr,
                                    filter.data());
   } else {
-    auto csr = raft::make_device_csr_matrix<T, IdxT>(res, n_queries, n_dataset, nnz_h);
+    
+	auto dataset_view = raft::make_device_matrix_view<const T, IdxT, raft::row_major>(
+	  idx.dataset().data_handle(), n_dataset, dim);
 
-    // fill csr
-    raft::sparse::convert::bitmap_to_csr(res, filter, csr);
-
-    // create filter csr view
+	auto csr = raft::make_device_csr_matrix<T, IdxT>(res, n_queries, n_dataset, nnz_h);
     auto compressed_csr_view = csr.structure_view();
-    rmm::device_uvector<IdxT> rows(compressed_csr_view.get_nnz(), stream);
-    raft::sparse::convert::csr_to_coo(compressed_csr_view.get_indptr().data(),
-                                      compressed_csr_view.get_n_rows(),
-                                      rows.data(),
-                                      compressed_csr_view.get_nnz(),
-                                      stream);
-    if (n_queries > 10) {
-      auto csr_view = raft::make_device_csr_matrix_view<T, IdxT, IdxT, IdxT>(
-        csr.get_elements().data(), compressed_csr_view);
+	auto csr_view = raft::make_device_csr_matrix_view<T, IdxT, IdxT, IdxT>(
+	  csr.get_elements().data(), compressed_csr_view);
 
-      // create dataset view
-      auto dataset_view = raft::make_device_matrix_view<const T, IdxT, raft::col_major>(
-        idx.dataset().data_handle(), dim, n_dataset);
-
-      // calc dot
-      T alpha = static_cast<T>(1.0f);
-      T beta  = static_cast<T>(0.0f);
-      raft::sparse::linalg::sddmm(res,
-                                  queries,
-                                  dataset_view,
-                                  csr_view,
-                                  raft::linalg::Operation::NON_TRANSPOSE,
-                                  raft::linalg::Operation::NON_TRANSPOSE,
-                                  raft::make_host_scalar_view<T>(&alpha),
-                                  raft::make_host_scalar_view<T>(&beta));
-    } else {
-      raft::sparse::distance::detail::faster_dot_on_csr(res,
-                                                        csr.get_elements().data(),
-                                                        compressed_csr_view.get_nnz(),
-                                                        compressed_csr_view.get_indptr().data(),
-                                                        compressed_csr_view.get_indices().data(),
-                                                        queries.data_handle(),
-                                                        idx.dataset().data_handle(),
-                                                        compressed_csr_view.get_n_rows(),
-                                                        dim);
-    }
-
+                   
+    raft::sparse::linalg::masked_matmul(res, queries, dataset_view, filter, csr_view);
+	
     // post process
     std::optional<raft::device_vector<T, IdxT>> query_norms_;
     if (metric == cuvs::distance::DistanceType::L2Expanded ||
@@ -696,6 +665,14 @@ void brute_force_search_filtered(
                                 raft::identity_op{});
         }
       }
+	  
+      rmm::device_uvector<IdxT> rows(compressed_csr_view.get_nnz(), stream);
+      raft::sparse::convert::csr_to_coo(compressed_csr_view.get_indptr().data(),
+                                        compressed_csr_view.get_n_rows(),
+                                        rows.data(),
+                                        compressed_csr_view.get_nnz(),
+                                        stream);
+  	
       cuvs::neighbors::detail::epilogue_on_csr(
         res,
         csr.get_elements().data(),
