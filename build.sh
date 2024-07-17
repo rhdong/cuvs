@@ -354,6 +354,7 @@ if (( ${NUMARGS} == 0 )) || hasArg libcuvs || hasArg docs || hasArg tests || has
           -DBUILD_ANN_BENCH=${BUILD_ANN_BENCH} \
           -DBUILD_CPU_ONLY=${BUILD_CPU_ONLY} \
           -DCMAKE_MESSAGE_LOG_LEVEL=${CMAKE_LOG_LEVEL} \
+          -DCPM_raft_SOURCE="/raft" \
           ${CACHE_ARGS} \
           ${EXTRA_CMAKE_ARGS}
 
