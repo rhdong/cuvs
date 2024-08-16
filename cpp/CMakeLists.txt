@@ -413,7 +413,7 @@ add_library(
   src/selection/select_k_half_uint32_t.cu
 )
 
-target_compile_definitions(raft_objs PRIVATE "CUVS_EXPLICIT_INSTANTIATE_ONLY")
+target_compile_definitions(cuvs PRIVATE "CUVS_EXPLICIT_INSTANTIATE_ONLY")
 
 target_compile_options(
   cuvs INTERFACE $<$<COMPILE_LANG_AND_ID:CUDA,NVIDIA>:--expt-extended-lambda
