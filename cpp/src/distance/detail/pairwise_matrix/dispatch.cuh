@@ -15,7 +15,7 @@
  */
 #pragma once
 
-#ifndef CUVS_EXPLICIT_INSTANTIATE_ONLY
+#ifndef _CUVS_EXPLICIT_INSTANTIATE_ONLY
 #include "dispatch-inl.cuh"
 #endif
 
