@@ -27,6 +27,7 @@
 #include <raft/core/resources.hpp>
 
 #include <cuvs/distance/distance.hpp>
+#include <cuvs/neighbors/brute_force.hpp>
 #include <cuvs/neighbors/cagra.hpp>
 
 #include <cuvs/neighbors/common.hpp>
