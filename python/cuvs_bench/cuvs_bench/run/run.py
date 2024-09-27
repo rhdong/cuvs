@@ -165,6 +165,8 @@ def run_benchmark(
         allowed_algo_groups = list(zip(*allowed_algo_groups))
     algos_conf = dict()
     for algo_f in algos_conf_fs:
+        if not "yaml" in algo_f:
+            continue
         with open(algo_f, "r") as f:
             try:
                 algo = yaml.safe_load(f)
