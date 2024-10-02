@@ -656,8 +656,8 @@ inline auto run_main(int argc, char** argv) -> int
   Mode metric_objective = Mode::kLatency;
   if (mode == "throughput") { metric_objective = Mode::kThroughput; }
 
-  int max_threads =
-    (metric_objective == Mode::kThroughput) ? std::thread::hardware_concurrency() : 1;
+  int max_threads = 1;
+//    (metric_objective == Mode::kThroughput) ? std::thread::hardware_concurrency() : 1;
   if (threads[1] == -1) threads[1] = max_threads;
 
   if (metric_objective == Mode::kLatency) {

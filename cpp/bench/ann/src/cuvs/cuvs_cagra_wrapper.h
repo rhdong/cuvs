@@ -43,6 +43,7 @@
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -74,6 +75,40 @@ class cuvs_cagra : public algo<T>, public algo_gpu {
     std::optional<cuvs::neighbors::ivf_pq::search_params> ivf_pq_search_params = std::nullopt;
   };
 
+  int64_t create_sparse_bitset(int64_t total, float sparsity, std::vector<uint32_t>& bitset) const
+  {
+    int64_t num_ones = static_cast<int64_t>((total * 1.0f) * (1.0f - sparsity));
+    int64_t res      = num_ones;
+
+    for (auto& item : bitset) {
+      item = static_cast<uint32_t>(0);
+    }
+
+    if(sparsity == 0.0) {
+      for (auto& item : bitset) {
+        item = static_cast<uint32_t>(0xffffffff);
+      }
+      return total;
+    }
+
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<int64_t> dis(0, total - 1);
+
+    while (num_ones > 0) {
+      int64_t index = dis(gen);
+
+      uint32_t& element    = bitset[index / (8 * sizeof(uint32_t))];
+      int64_t bit_position = index % (8 * sizeof(uint32_t));
+
+      if (((element >> bit_position) & 1) == 0) {
+        element |= (static_cast<uint32_t>(1) << bit_position);
+        num_ones--;
+      }
+    }
+    return res;
+  }
+
   cuvs_cagra(Metric metric, int dim, const build_param& param, int concurrent_searches = 1)
     : algo<T>(metric, dim),
       index_params_(param),
@@ -85,7 +120,10 @@ class cuvs_cagra : public algo<T>, public algo_gpu {
         std::move(raft::make_device_matrix<IdxT, int64_t>(handle_, 0, 0)))),
       input_dataset_v_(
         std::make_shared<raft::device_matrix_view<const T, int64_t, raft::row_major>>(
-          nullptr, 0, 0))
+          nullptr, 0, 0)),
+      bitset_filter_(
+        std::make_shared<raft::device_vector<std::uint32_t, int64_t>>(
+          std::move(raft::make_device_vector<std::uint32_t, int64_t>(handle_, 0))))
 
   {
     index_params_.cagra_params.metric         = parse_metric_type(metric);
@@ -143,6 +181,9 @@ class cuvs_cagra : public algo<T>, public algo_gpu {
   std::shared_ptr<raft::device_matrix<IdxT, int64_t, raft::row_major>> graph_;
   std::shared_ptr<raft::device_matrix<T, int64_t, raft::row_major>> dataset_;
   std::shared_ptr<raft::device_matrix_view<const T, int64_t, raft::row_major>> input_dataset_v_;
+
+  std::shared_ptr<raft::device_vector<std::uint32_t, int64_t>> bitset_filter_;
+  double sparsity_ = 0.9;
 
   inline rmm::device_async_resource_ref get_mr(AllocatorType mem_type)
   {
@@ -239,14 +280,40 @@ void cuvs_cagra<T, IdxT>::set_search_param(const search_param_base& param)
     RAFT_LOG_DEBUG("moving dataset to new memory space: %s",
                    allocator_to_string(dataset_mem_).c_str());
 
-    auto mr = get_mr(dataset_mem_);
-    cuvs::neighbors::cagra::detail::copy_with_padding(handle_, *dataset_, *input_dataset_v_, mr);
+    // Brute force doesn't support padding dataset.
+    bool without_brute_force = false;
+    if(without_brute_force) {
+      auto mr = get_mr(dataset_mem_);
+      cuvs::neighbors::cagra::detail::copy_with_padding(handle_, *dataset_, *input_dataset_v_, mr);
 
-    auto dataset_view = raft::make_device_strided_matrix_view<const T, int64_t>(
-      dataset_->data_handle(), dataset_->extent(0), this->dim_, dataset_->extent(1));
-    index_->update_dataset(handle_, dataset_view);
+      auto dataset_view = raft::make_device_strided_matrix_view<const T, int64_t>(
+        dataset_->data_handle(), dataset_->extent(0), this->dim_, dataset_->extent(1));
+      index_->update_dataset(handle_, dataset_view);
+    } else {
+      *dataset_ = raft::make_device_matrix<T, int64_t>(
+                      handle_,
+                      input_dataset_v_->extent(0),
+                      input_dataset_v_->extent(1));
+      auto stream = raft::resource::get_cuda_stream(handle_);
+      auto data_size =  input_dataset_v_->extent(0) * input_dataset_v_->extent(1);
+      raft::copy(dataset_->data_handle(), input_dataset_v_->data_handle(), data_size, stream);
+      index_->update_dataset(handle_, make_const_mdspan(dataset_->view()));
+    }
 
     need_dataset_update_ = false;
+  }
+
+  { // create bitset filter in advance.
+    auto stream_ = raft::resource::get_cuda_stream(handle_);
+    size_t filter_n_elements = size_t((input_dataset_v_->extent(0) + 31) / 32);
+    *bitset_filter_ = raft::make_device_vector<std::uint32_t, int64_t>(
+                        handle_,
+                        filter_n_elements);
+
+    std::vector<std::uint32_t> bitset_cpu(filter_n_elements);
+
+    create_sparse_bitset(input_dataset_v_->extent(0), sparsity_, bitset_cpu);
+    raft::copy(bitset_filter_->data_handle(), bitset_cpu.data(), filter_n_elements, stream_);
   }
 }
 
@@ -291,6 +358,34 @@ std::unique_ptr<algo<T>> cuvs_cagra<T, IdxT>::copy()
   return std::make_unique<cuvs_cagra<T, IdxT>>(*this);  // use copy constructor
 }
 
+template <typename IdxT>
+auto cagra_calc_recall(const std::vector<IdxT>& expected_idx,
+                       const std::vector<IdxT>& actual_idx,
+                       size_t rows,
+                       size_t cols)
+{
+  size_t match_count = 0;
+  size_t total_count = static_cast<size_t>(rows) * static_cast<size_t>(cols);
+  for (size_t i = 0; i < rows; ++i) {
+    for (size_t k = 0; k < cols; ++k) {
+      size_t idx_k = i * cols + k;  // row major assumption!
+      auto act_idx = actual_idx[idx_k];
+      for (size_t j = 0; j < cols; ++j) {
+        size_t idx   = i * cols + j;  // row major assumption!
+        auto exp_idx = expected_idx[idx];
+        if (act_idx == exp_idx) {
+          match_count++;
+          break;
+        }
+      }
+    }
+  }
+  return std::make_tuple(
+    static_cast<double>(match_count) / static_cast<double>(total_count),
+    match_count,
+    total_count);
+}
+
 template <typename T, typename IdxT>
 void cuvs_cagra<T, IdxT>::search_base(
   const T* queries, int batch_size, int k, algo_base::index_type* neighbors, float* distances) const
@@ -313,8 +408,51 @@ void cuvs_cagra<T, IdxT>::search_base(
     raft::make_device_matrix_view<IdxT, int64_t>(neighbors_idx_t, batch_size, k);
   auto distances_view = raft::make_device_matrix_view<float, int64_t>(distances, batch_size, k);
 
-  cuvs::neighbors::cagra::search(
-    handle_, search_params_, *index_, queries_view, neighbors_view, distances_view);
+
+  auto neighbors_brute_force =
+    raft::make_device_matrix<IdxT, int64_t>(handle_, batch_size, k);
+  auto neighbors_brute_force_view = neighbors_brute_force.view();
+
+  constexpr bool need_check_recall = true;
+
+  if constexpr ((std::is_same_v<T, float> || std::is_same_v<T, half>) && need_check_recall) {
+    auto stream_ = raft::resource::get_cuda_stream(handle_);
+    cuvs::core::bitset<std::uint32_t, int64_t> bitset_filter(handle_, index_->data().n_rows(), false);
+
+    std::vector<uint32_t> bitset_cpu(bitset_filter.n_elements());
+
+    create_sparse_bitset(bitset_filter.size(), sparsity_, bitset_cpu);
+    raft::copy(bitset_filter.data(), bitset_cpu.data(), bitset_filter.n_elements(), stream_);
+
+    auto filter =
+      std::make_optional(cuvs::neighbors::filtering::bitset_filter(bitset_filter.view()));
+    cuvs::neighbors::cagra::search(
+      handle_, search_params_, *index_, queries_view, neighbors_view, distances_view, filter, 1.000);
+
+    if(need_check_recall) {
+      assert(((index_->data().n_rows() * 1.0) * (1.0 - sparsity_) < k));
+      std::vector<IdxT> actual_idx_cpu(neighbors_view.size());
+      std::vector<IdxT> expected_idx_cpu(neighbors_view.size());
+
+      raft::copy(actual_idx_cpu.data(), neighbors_view.data_handle(), neighbors_view.size(), stream_);
+
+      cuvs::neighbors::cagra::search(
+        handle_, search_params_, *index_, queries_view, neighbors_brute_force_view, distances_view, filter, 0.0000);
+
+      raft::copy(expected_idx_cpu.data(), neighbors_brute_force_view.data_handle(), neighbors_brute_force_view.size(), stream_);
+      raft::resource::sync_stream(handle_, stream_);
+
+      auto [actual_recall, match_count, total_count] =
+        cagra_calc_recall(expected_idx_cpu, actual_idx_cpu, batch_size, k);
+      std::cout << "actual recall rate: " << actual_recall
+                << ", match_count: " << match_count
+                << ", total_count: " << total_count
+                << std::endl;
+    }
+  } else {
+    cuvs::neighbors::cagra::search(
+      handle_, search_params_, *index_, queries_view, neighbors_view, distances_view);
+  }
 
   if constexpr (sizeof(IdxT) != sizeof(algo_base::index_type)) {
     raft::linalg::unaryOp(neighbors,

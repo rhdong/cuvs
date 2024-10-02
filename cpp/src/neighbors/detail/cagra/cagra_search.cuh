@@ -264,7 +264,8 @@ void search_main(raft::resources const& res,
                  raft::device_matrix_view<const T, int64_t, raft::row_major> queries,
                  raft::device_matrix_view<InternalIdxT, int64_t, raft::row_major> neighbors,
                  raft::device_matrix_view<DistanceT, int64_t, raft::row_major> distances,
-                 CagraSampleFilterT sample_filter = CagraSampleFilterT())
+                 CagraSampleFilterT sample_filter = CagraSampleFilterT(),
+                 double threshold_to_bf           = 1.0)
 {
   if constexpr (!std::is_same_v<CagraSampleFilterT,
                                 cuvs::neighbors::filtering::none_cagra_sample_filter> &&
@@ -275,14 +276,12 @@ void search_main(raft::resources const& res,
     auto bitset_filter_view = sample_filter.bitset_view_;
     auto dataset_view       = index.contiguous_dataset();
 
-    auto sparsity                    = bitset_filter_view.sparsity(res);
-    constexpr double threshold_to_bf = 0.9;
+    auto sparsity = bitset_filter_view.sparsity(res);
 
     // TODO: Support host dataset in `brute_force::build`
     if (sparsity >= threshold_to_bf &&
         std::holds_alternative<raft::device_matrix_view<const T, int64_t, raft::row_major>>(
           dataset_view)) {
-      std::cout << " Cagra goes to BF!" << std::endl;
       using bitmap_view_t = cuvs::core::bitmap_view<const uint32_t, int64_t>;
 
       auto stream = raft::resource::get_cuda_stream(res);
@@ -302,6 +301,7 @@ void search_main(raft::resources const& res,
         std::get_if<raft::device_matrix_view<const T, int64_t, raft::row_major>>(&dataset_view);
 
       if (brute_force_dataset) {
+	  	std::cout << "we use brute force with filter" << std::endl;
         auto brute_force_idx =
           cuvs::neighbors::brute_force::build(res, *brute_force_dataset, index.metric());
         cuvs::neighbors::brute_force::search(res,
@@ -318,6 +318,7 @@ void search_main(raft::resources const& res,
         return;
       }
     }
+    std::cout << "we use cagra with filter: " << sparsity << std::endl;
   }
 
   const auto& graph   = index.graph();
