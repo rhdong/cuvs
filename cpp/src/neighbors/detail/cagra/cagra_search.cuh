@@ -41,7 +41,19 @@
 
 #include <rmm/cuda_stream_view.hpp>
 
+
 namespace cuvs::neighbors::cagra::detail {
+
+template <typename DataT>
+__global__ void checkFullF(const DataT* data, size_t size) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	if(idx == 0) printf("checkFullF: size=%lu\n", size);
+    if (idx < size) {
+        if (data[idx] != 0xFFFFFFFF) {
+            printf("Index %d: Value = 0x%X\n", idx, data[idx]);
+        }
+    }
+}
 
 template <typename DataT, typename IndexT, typename DistanceT, typename CagraSampleFilterT>
 void search_main_core(raft::resources const& res,
@@ -82,6 +94,17 @@ void search_main_core(raft::resources const& res,
   RAFT_LOG_DEBUG("Cagra search");
   const uint32_t max_queries = plan->max_queries;
   const uint32_t query_dim   = queries.extent(1);
+  
+  uint32_t* _num_executed_iterations = nullptr;
+  if constexpr (!std::is_same_v<CagraSampleFilterT,
+                                cuvs::neighbors::filtering::none_sample_filter>){
+	  size_t size = sample_filter.bitset_view_.n_elements();
+	  int threadsPerBlock = 256;
+	  int blocksPerGrid = (graph.extent(0) + threadsPerBlock - 1) / threadsPerBlock;
+	  checkFullF<<<blocksPerGrid, 256>>>(sample_filter.bitset_view_.data(), size);
+	  cudaDeviceSynchronize();
+  }
+  
 
   for (unsigned qid = 0; qid < queries.extent(0); qid += max_queries) {
     const uint32_t n_queries = std::min<std::size_t>(max_queries, queries.extent(0) - qid);
@@ -93,7 +116,6 @@ void search_main_core(raft::resources const& res,
       plan->num_seeds > 0
         ? reinterpret_cast<const IndexT*>(plan->dev_seed.data()) + (plan->num_seeds * qid)
         : nullptr;
-    uint32_t* _num_executed_iterations = nullptr;
 
     (*plan)(res,
             graph,
