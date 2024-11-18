@@ -43,6 +43,7 @@
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -51,6 +52,8 @@ namespace cuvs::bench {
 
 enum class AllocatorType { kHostPinned, kHostHugePage, kDevice };
 enum class CagraBuildAlgo { kAuto, kIvfPq, kNnDescent };
+
+constexpr double sparsity_ = 0.5f;
 
 template <typename T, typename IdxT>
 class cuvs_cagra : public algo<T>, public algo_gpu {
@@ -91,6 +94,40 @@ class cuvs_cagra : public algo<T>, public algo_gpu {
     }
   };
 
+  int64_t create_sparse_bitset(int64_t total, float sparsity, std::vector<uint32_t>& bitset) const
+  {
+    int64_t num_ones = static_cast<int64_t>((total * 1.0f) * (1.0f - sparsity));
+    int64_t res      = num_ones;
+
+    for (auto& item : bitset) {
+      item = static_cast<uint32_t>(0);
+    }
+
+    if (sparsity == 0.0) {
+      for (auto& item : bitset) {
+        item = static_cast<uint32_t>(0xffffffff);
+      }
+      return total;
+    }
+
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<int64_t> dis(0, total - 1);
+
+    while (num_ones > 0) {
+      int64_t index = dis(gen);
+
+      uint32_t& element    = bitset[index / (8 * sizeof(uint32_t))];
+      int64_t bit_position = index % (8 * sizeof(uint32_t));
+
+      if (((element >> bit_position) & 1) == 0) {
+        element |= (static_cast<uint32_t>(1) << bit_position);
+        num_ones--;
+      }
+    }
+    return res;
+  }
+
   cuvs_cagra(Metric metric, int dim, const build_param& param, int concurrent_searches = 1)
     : algo<T>(metric, dim),
       index_params_(param),
@@ -102,7 +139,9 @@ class cuvs_cagra : public algo<T>, public algo_gpu {
         std::move(raft::make_device_matrix<IdxT, int64_t>(handle_, 0, 0)))),
       input_dataset_v_(
         std::make_shared<raft::device_matrix_view<const T, int64_t, raft::row_major>>(
-          nullptr, 0, 0))
+          nullptr, 0, 0)),
+      bitset_filter_(std::make_shared<raft::device_vector<std::uint32_t, int64_t>>(
+        std::move(raft::make_device_vector<std::uint32_t, int64_t>(handle_, 0))))
 
   {
     index_params_.cagra_params.metric         = parse_metric_type(metric);
@@ -170,6 +209,8 @@ class cuvs_cagra : public algo<T>, public algo_gpu {
   std::shared_ptr<raft::device_matrix<IdxT, int64_t, raft::row_major>> graph_;
   std::shared_ptr<raft::device_matrix<T, int64_t, raft::row_major>> dataset_;
   std::shared_ptr<raft::device_matrix_view<const T, int64_t, raft::row_major>> input_dataset_v_;
+
+  std::shared_ptr<raft::device_vector<std::uint32_t, int64_t>> bitset_filter_;
 
   inline rmm::device_async_resource_ref get_mr(AllocatorType mem_type)
   {
@@ -256,6 +297,17 @@ void cuvs_cagra<T, IdxT>::set_search_param(const search_param_base& param)
 
     need_dataset_update_ = false;
   }
+
+  {  // create bitset filter in advance.
+    auto stream_             = raft::resource::get_cuda_stream(handle_);
+    size_t filter_n_elements = size_t((input_dataset_v_->extent(0) + 31) / 32);
+    *bitset_filter_ = raft::make_device_vector<std::uint32_t, int64_t>(handle_, filter_n_elements);
+
+    std::vector<std::uint32_t> bitset_cpu(filter_n_elements);
+
+    create_sparse_bitset(input_dataset_v_->extent(0), sparsity_, bitset_cpu);
+    raft::copy(bitset_filter_->data_handle(), bitset_cpu.data(), filter_n_elements, stream_);
+  }
 }
 
 template <typename T, typename IdxT>
@@ -328,8 +380,25 @@ void cuvs_cagra<T, IdxT>::search_base(const T* queries,
     raft::make_device_matrix_view<IdxT, int64_t>(neighbors_idx_t, batch_size, k);
   auto distances_view = raft::make_device_matrix_view<float, int64_t>(distances, batch_size, k);
 
-  cuvs::neighbors::cagra::search(
-    handle_, search_params_, *index_, queries_view, neighbors_view, distances_view);
+  constexpr bool need_check_recall = true;
+  if constexpr ((std::is_same_v<T, float> || std::is_same_v<T, half>) && need_check_recall && sparsity_ > 0.0f ) {
+    auto stream_ = raft::resource::get_cuda_stream(handle_);
+    cuvs::core::bitset<std::uint32_t, int64_t> bitset_filter(handle_, index_->data().n_rows(), false);
+
+    std::vector<uint32_t> bitset_cpu(bitset_filter.n_elements());
+
+    create_sparse_bitset(bitset_filter.size(), sparsity_, bitset_cpu);
+    raft::copy(bitset_filter.data(), bitset_cpu.data(), bitset_filter.n_elements(), stream_);
+
+    auto filter = cuvs::neighbors::filtering::bitset_filter(bitset_filter.view());
+
+    cuvs::neighbors::cagra::search(
+      handle_, search_params_, *index_, queries_view, neighbors_view, distances_view, filter);
+
+  } else {
+    cuvs::neighbors::cagra::search(
+      handle_, search_params_, *index_, queries_view, neighbors_view, distances_view);
+  }
 
   if constexpr (sizeof(IdxT) != sizeof(algo_base::index_type)) {
     if (raft::get_device_for_address(neighbors) < 0 &&
