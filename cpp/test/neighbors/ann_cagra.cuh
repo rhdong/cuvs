@@ -1082,7 +1082,7 @@ inline std::vector<AnnCagraInputs> generate_bf_inputs()
   // Add test cases for brute force as sparsity >= 0.9.
   std::vector<AnnCagraInputs> inputs_for_brute_force;
   auto inputs_original = raft::util::itertools::product<AnnCagraInputs>(
-    {100},
+    {1, 100},
     {1000},
     {1, 7, 8, 17},
     {1, 16},  // k
