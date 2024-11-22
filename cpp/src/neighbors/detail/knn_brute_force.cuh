@@ -574,305 +574,6 @@ void brute_force_search(
     query_norms ? query_norms->data_handle() : nullptr);
 }
 
-template <typename value_t>
-__device__ __forceinline__
-void ldgsts32(const value_t &smem_addr,
-              const void *gmem_ptr) {
-    asm volatile (
-            "cp.async.ca.shared.global.L2::128B [%0], [%1], 4;\n"
-            : : "r"(smem_addr), "l"(gmem_ptr)
-            );
-}
-
-template <typename value_t>
-__device__ __forceinline__
-void ldgsts32(const value_t &smem_addr,
-              const void *gmem_ptr,
-              const value_t &src_size) {
-    asm volatile (
-            "cp.async.ca.shared.global.L2::128B [%0], [%1], 4, %2;\n"
-            : : "r"(smem_addr), "l"(gmem_ptr), "r"(src_size)
-            );
-}
-
-template <typename value_t>
-__device__ __forceinline__
-void stg32(const value_t &reg, void *ptr, bool guard) {
-    asm volatile (
-            "{.reg .pred p;\n"
-            " setp.ne.b32 p, %2, 0;\n"
-            " @p st.global.f32 [%0], %1;}\n"
-            : : "l"(ptr), "f"(reg), "r"((int)guard)
-            );
-}
-
-template <typename value_t=uint32_t>
-__device__ __forceinline__
-void lds128(float &reg0, float &reg1,
-            float &reg2, float &reg3,
-            const uint32_t &addr) {
-    asm volatile (
-            "ld.shared.v4.b32 {%0, %1, %2, %3}, [%4];\n"
-            : "=f"(reg0), "=f"(reg1), "=f"(reg2), "=f"(reg3)
-            : "r"(addr)
-            );
-}
-
-
-template <typename value_t=uint32_t>
-__device__ __forceinline__
-value_t smem_u32addr(const void *smem_ptr) {
-    uint32_t addr;
-    asm ("{.reg .u64 u64addr;\n"
-         " cvta.to.shared.u64 u64addr, %1;\n"
-         " cvt.u32.u64 %0, u64addr;}\n"
-            : "=r"(addr)
-            : "l"(smem_ptr)
-            );
-
-    return addr;
-}
-
-
-template <typename value_idx, typename value_t, typename dot_t = value_t, int TPB = 128>
-__global__ void faster_dot_on_csr_kernel(dot_t* __restrict__ dot,
-                                         const value_idx* __restrict__ indptr,
-                                         const value_idx* __restrict__ cols,
-                                         const value_t* __restrict__ A,
-                                         const value_t* __restrict__ B,
-                                         const value_idx nnz,
-                                         const value_idx n_rows,
-                                         const value_idx dim)
-{
-  constexpr value_idx N_BUFF         = 2;
-  constexpr value_idx N_FREG         = 16;
-  constexpr value_idx SHARED_STRIDE  = TPB + sizeof(value_t);
-  constexpr value_idx N_ROW_PER_ITER = TPB / N_FREG;
-  const int A_CYCLE                  = (dim + TPB - 1) / TPB;
-  const int B_SHARED_SIZE            = N_BUFF * 2 * sizeof(value_t) * TPB * N_FREG;
-  constexpr uint32_t switcher_ADD    = B_SHARED_SIZE / N_BUFF;
-
-  extern __shared__ char a_smem[];
-  __shared__ __align__(16 * 1024) char b_smem[B_SHARED_SIZE];
-
-  value_t* s_A = reinterpret_cast<value_t*>(a_smem);
-  value_t* s_B = reinterpret_cast<value_t*>(b_smem);
-
-  value_t r_A[N_BUFF][4];
-  value_t r_B[N_BUFF][4];
-
-  uint32_t B_ldg_offset[N_FREG];
-  uint32_t B_sts_offset[N_FREG];
-
-  auto g_offset = gridDim.y * blockDim.x;
-  auto l_offset = blockDim.x * blockIdx.y;
-  for (auto row = blockIdx.x; row < n_rows; row += gridDim.x) {
-    auto s_cols = indptr[row];
-    auto e_cols = indptr[row + 1];
-
-    // TODO: dot_id should < nnz, also < indptr[n_row + 1]
-    value_idx start_dot_id = s_cols + l_offset;
-
-    const char* A_ldg_ptr = (const char*)(A + row * dim + threadIdx.x);
-    uint32_t A_sts_addr   = smem_u32addr(s_A + threadIdx.x);
-
-    for (int i = 0; i < A_CYCLE; i++) {
-      uint32_t src_size = (i * blockIdx.x) >= dim ? 0 : 4;
-      ldgsts32(uint32_t(A_sts_addr + i * blockDim.x * sizeof(value_t)),
-               A_ldg_ptr + i * blockDim.x * sizeof(value_t),
-               src_size);
-    }
-
-    /*-------- start main loop. -----------*/
-    for (; start_dot_id < e_cols; start_dot_id += g_offset) {
-      int dot_id           = start_dot_id + threadIdx.x;
-      value_t* dot_stg_ptr = dot + dot_id;
-      // TODO: assume there's at least one dot in one row.
-      int k_tiles = (dim + N_FREG - 1) / N_FREG - 1;
-
-      uint32_t A_lds_addr = smem_u32addr(s_A);
-
-      const char* B_ldg_ptr = (const char*)(B);
-      uint32_t B_sts_addr   = smem_u32addr(s_B + threadIdx.x);
-      uint32_t B_lds_addr   = smem_u32addr(s_B + (threadIdx.x * N_FREG / TPB) * SHARED_STRIDE +
-                                         threadIdx.x % (blockDim.x / N_FREG) * N_FREG);
-
-      value_t r_dot  = 0.0f;
-      value_t a_norm = 0.0f;
-      value_t b_norm = 0.0f;
-
-#pragma unroll
-      for (int i = 0; i < N_FREG; ++i) {
-        value_idx ldg_dot_id = start_dot_id + i * N_ROW_PER_ITER + threadIdx.x / N_FREG;
-        value_idx l_col      = cols[ldg_dot_id];
-        B_ldg_offset[i]      = 0;
-        B_sts_offset[i]      = i * SHARED_STRIDE * sizeof(value_t);
-        if (ldg_dot_id < e_cols) {
-          B_ldg_offset[i] = l_col * dim * sizeof(value_t) +
-                            threadIdx.x % N_FREG * sizeof(value_t);  // TODO: performance improving
-        }
-      }
-
-      int Reg_buff = 0;
-
-      {
-        uint32_t first_k_tile = dim - k_tiles * N_FREG;
-
-        uint32_t src_size = threadIdx.x % N_FREG < first_k_tile ? 4 : 0;  // TODO: check correctness
-#pragma unroll
-        for (int k_frag = 0; k_frag < N_FREG; k_frag++) {
-          ldgsts32(B_sts_addr + B_sts_offset[k_frag], B_ldg_ptr + B_ldg_offset[k_frag], src_size);
-        }
-
-        // switch double buffer
-        B_sts_addr ^= switcher_ADD;
-
-        // ldg pointer for next tile
-        B_ldg_ptr += first_k_tile * sizeof(value_t);
-
-        //ldgsts_wait_all();
-        asm volatile ("cp.async.wait_all;\n"::);
-        __syncthreads();
-
-        lds128(r_A[0][0], r_A[0][1], r_A[0][2], r_A[0][3], A_lds_addr);
-        lds128(r_B[0][0], r_B[0][1], r_B[0][2], r_B[0][3], B_lds_addr);
-        A_lds_addr += 4 * sizeof(value_t);
-      }
-
-      // k_tiles loop,  31 tiles * 8 frags
-      for (; k_tiles > 0;
-           --k_tiles) {  // 31 - (N_BUFF - 1) -> 1, total 31; N_BUFF = 1, 28; N_BUFF = 4
-        // store next A&B tile to shared memory
-        for (int k_part = 0; k_part < N_FREG; k_part += 4) {
-          if ((k_part + 4) >= N_FREG) {
-            //ldgsts_wait_all();
-			asm volatile ("cp.async.wait_all;\n"::);
-            __syncthreads();
-
-            // switch double buffer
-            B_lds_addr ^= switcher_ADD;
-            B_sts_addr ^= switcher_ADD;
-
-            // ldg pointer for next tile
-            B_ldg_ptr += N_FREG * sizeof(value_t);
-          }
-
-          if (k_part <= 4) {
-            int x = k_part / 4;
-#pragma unroll
-            for (int k_frag = x * N_FREG / 2; k_frag < N_FREG / 2 * (1 + k_part / 4); ++k_frag) {
-              ldgsts32(B_sts_addr + B_sts_offset[k_frag], B_ldg_ptr + B_ldg_offset[k_frag]);
-            }
-          }
-
-          lds128(r_A[Reg_buff ^ 1][0],
-                 r_A[Reg_buff ^ 1][1],
-                 r_A[Reg_buff ^ 1][2],
-                 r_A[Reg_buff ^ 1][3],
-                 A_lds_addr);
-          A_lds_addr += 4 * sizeof(value_t);
-
-          lds128(r_B[Reg_buff ^ 1][0],
-                 r_B[Reg_buff ^ 1][1],
-                 r_B[Reg_buff ^ 1][2],
-                 r_B[Reg_buff ^ 1][3],
-                 B_lds_addr + ((k_part + 4) % N_FREG) * sizeof(value_t));
-
-#pragma unroll
-          for (int i = 0; i < 4; ++i) {
-            r_dot += r_A[Reg_buff][i] * r_B[Reg_buff][i];
-            a_norm += r_A[Reg_buff][i] * r_A[Reg_buff][i];
-            b_norm += r_B[Reg_buff][i] * r_B[Reg_buff][i];
-          }
-
-          Reg_buff ^= 1;
-        }
-      }
-
-      for (int k_part = 0; k_part < N_FREG; k_part += 4) {
-        lds128(r_A[Reg_buff ^ 1][0],
-               r_A[Reg_buff ^ 1][1],
-               r_A[Reg_buff ^ 1][2],
-               r_A[Reg_buff ^ 1][3],
-               A_lds_addr);
-        lds128(r_B[Reg_buff ^ 1][0],
-               r_B[Reg_buff ^ 1][1],
-               r_B[Reg_buff ^ 1][2],
-               r_B[Reg_buff ^ 1][3],
-               B_lds_addr + ((k_part + 4) % N_FREG) * sizeof(value_t));
-        A_lds_addr += 4 * sizeof(value_t);
-
-#pragma unroll
-        for (int i = 0; i < 4; ++i) {  // B index, TODO: extend to 4
-          r_dot += r_A[Reg_buff][i] * r_B[Reg_buff][i];
-          a_norm += r_A[Reg_buff][i] * r_A[Reg_buff][i];
-          b_norm += r_B[Reg_buff][i] * r_B[Reg_buff][i];
-        }
-
-        Reg_buff ^= 1;
-      }
-
-      r_dot *= -2.0f;
-      r_dot += a_norm + b_norm;
-      stg32(r_dot, dot_stg_ptr, dot_id < e_cols);
-    }
-  }
-}
-
-// faster_dot_on_csr
-template <typename value_idx, typename value_t>
-void faster_dot_on_csr(raft::resources const& handle,
-                       value_t* dot,
-                       const value_idx nnz,
-                       const value_idx* indptr,
-                       const value_idx* cols,
-                       const value_t* A,
-                       const value_t* B,
-                       const value_idx n_rows,
-                       const value_idx dim)
-{
-  if (nnz == 0 || n_rows == 0) return;
-
-  auto stream = raft::resource::get_cuda_stream(handle);
-
-  int dev_id, sm_count, blocks_per_sm;
-
-  int smem_size = 0;
-  cudaGetDevice(&dev_id);
-  cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, dev_id);
-
-  cudaFuncAttributes attr;
-  cudaFuncGetAttributes(&attr, faster_dot_on_csr_kernel<value_idx, value_t>);
-
-  cudaDeviceProp prop;
-  cudaGetDeviceProperties(&prop, dev_id);
-
-  const value_idx MAX_ROW_PER_ITER = 1000;
-
-  constexpr int tpb = 128;
-
-  int a_shared_size = dim * sizeof(value_t);
-
-  smem_size = a_shared_size;
-
-  cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-    &blocks_per_sm, faster_dot_on_csr_kernel<value_idx, value_t>, tpb, smem_size);
-
-  auto eval_required_l2_per_block = dim * sizeof(value_t) * tpb;
-  auto eval_max_blocks_by_l2 =
-    std::max(1, static_cast<int>(prop.l2CacheSize * 0.85 / eval_required_l2_per_block));
-  auto eval_max_blocks_by_sm =
-    std::max(1, static_cast<int>(std::ceil(prop.multiProcessorCount * blocks_per_sm * 1.5)));
-  auto eval_max_blocks = std::min(eval_max_blocks_by_l2, eval_max_blocks_by_sm);
-
-  auto block_x = n_rows;//1000;
-  auto block_y = 2000 / n_rows;
-  dim3 blocks(block_x, block_y, 1);
-
-  faster_dot_on_csr_kernel<value_idx, value_t>
-    <<<blocks, tpb, smem_size, stream>>>(dot, indptr, cols, A, B, nnz, n_rows, dim);
-}
-
 template <typename T, typename IdxT, typename BitmapT, typename DistanceT = float>
 void brute_force_search_filtered(
   raft::resources const& res,
@@ -921,7 +622,7 @@ void brute_force_search_filtered(
   raft::resource::sync_stream(res, stream);
   float sparsity = (1.0f - (1.0f * nnz_h) / (1.0f * n_queries * n_dataset));
 
-  if (sparsity < 0.99f) {
+  if (sparsity < 0.9f) {
     raft::resources stream_pool_handle(res);
     raft::resource::set_cuda_stream(stream_pool_handle, stream);
     auto idx_norm = idx.has_norms() ? const_cast<DistanceT*>(idx.norms().data_handle()) : nullptr;
@@ -950,30 +651,21 @@ void brute_force_search_filtered(
 
     // create filter csr view
     auto compressed_csr_view = csr.structure_view();
+    rmm::device_uvector<IdxT> rows(compressed_csr_view.get_nnz(), stream);
+    raft::sparse::convert::csr_to_coo(compressed_csr_view.get_indptr().data(),
+                                      compressed_csr_view.get_n_rows(),
+                                      rows.data(),
+                                      compressed_csr_view.get_nnz(),
+                                      stream);
     auto dataset_view = raft::make_device_matrix_view<const T, IdxT, raft::row_major>(
       idx.dataset().data_handle(), n_dataset, dim);
 
     auto csr_view = raft::make_device_csr_matrix_view<DistanceT, IdxT, IdxT, IdxT>(
       csr.get_elements().data(), compressed_csr_view);
 
-    auto compressed_C_view = csr_view.structure_view();
-
-	if constexpr (std::is_same_v<T, DistanceT>){
-		//std::cout << "new ! faster_dot_on_csr" << std::endl;
-    	faster_dot_on_csr(res,
-    					  csr_view.get_elements().data(),
-    					  compressed_C_view.get_nnz(),
-    					  compressed_C_view.get_indptr().data(),
-    					  compressed_C_view.get_indices().data(),
-    					  queries.data_handle(),
-    					  dataset_view.data_handle(),
-    					  compressed_C_view.get_n_rows(),
-    					  dim);
-	}
-
+    raft::sparse::linalg::masked_matmul(res, queries, dataset_view, filter, csr_view);
 
     // post process
-    /*
     std::optional<raft::device_vector<DistanceT, IdxT>> query_norms_;
     if (metric == cuvs::distance::DistanceType::L2Expanded ||
         metric == cuvs::distance::DistanceType::L2SqrtExpanded ||
@@ -1012,7 +704,7 @@ void brute_force_search_filtered(
         query_norms ? query_norms->data_handle() : query_norms_->data_handle(),
         idx.norms().data_handle(),
         metric);
-    }*/
+    }
 
     // select k
     auto const_csr_view = raft::make_device_csr_matrix_view<const DistanceT, IdxT, IdxT, IdxT>(
