@@ -53,7 +53,7 @@ namespace cuvs::bench {
 enum class AllocatorType { kHostPinned, kHostHugePage, kDevice };
 enum class CagraBuildAlgo { kAuto, kIvfPq, kNnDescent };
 
-constexpr double sparsity = 0.9901f;
+constexpr double sparsity = 0.9501f;
 
 template <typename T, typename IdxT>
 class cuvs_cagra : public algo<T>, public algo_gpu {
