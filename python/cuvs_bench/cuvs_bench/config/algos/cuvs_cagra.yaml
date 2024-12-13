@@ -6,7 +6,7 @@ groups:
   base:
     build:
       graph_degree: [64]
-      intermediate_graph_degree: [96, 128]
+      intermediate_graph_degree: [128]
       graph_build_algo: ["NN_DESCENT"]
     search:
       itopk: [128]

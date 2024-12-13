@@ -200,7 +200,8 @@ class cuvs_cagra : public algo<T>, public algo_gpu {
 template <typename T, typename IdxT>
 void cuvs_cagra<T, IdxT>::build(const T* dataset, size_t nrow)
 {
-  auto dataset_extents = raft::make_extents<IdxT>(nrow, dimension_);
+  constexpr float extend_ratio = 0.5f;
+  auto dataset_extents = raft::make_extents<IdxT>(IdxT(nrow * (1 - extend_ratio)), dimension_);
   index_params_.prepare_build_params(dataset_extents);
 
   auto& params = index_params_.cagra_params;
@@ -210,9 +211,53 @@ void cuvs_cagra<T, IdxT>::build(const T* dataset, size_t nrow)
     raft::make_mdspan<const T, IdxT, raft::row_major, false, true>(dataset, dataset_extents);
   bool dataset_is_on_host = raft::get_device_for_address(dataset) == -1;
 
+  std::cout << "dataset_is_on_host: " << dataset_is_on_host << std::endl;
+
   index_ = std::make_shared<cuvs::neighbors::cagra::index<T, IdxT>>(std::move(
     dataset_is_on_host ? cuvs::neighbors::cagra::build(handle_, params, dataset_view_host)
                        : cuvs::neighbors::cagra::build(handle_, params, dataset_view_device)));
+
+
+  if constexpr(std::is_same_v<float, T> && extend_ratio > 0.0f) {
+    cuvs::neighbors::cagra::extend_params extend_params;
+    extend_params.max_chunk_size = 1024;
+
+    auto stream = raft::resource::get_cuda_stream(handle_);
+    auto additional_dataset =
+      raft::make_host_matrix<T, int64_t>(nrow - IdxT(nrow * (1.0f - extend_ratio)), dimension_);
+    raft::copy(additional_dataset.data_handle(),
+               static_cast<const T*>(dataset) + dataset_view_device.size(),
+               additional_dataset.size(),
+               stream);
+    auto index = index_.get();
+    auto new_dataset_buffer = raft::make_device_matrix<T, int64_t>(handle_, 0, 0);
+    auto new_graph_buffer   = raft::make_device_matrix<IdxT, int64_t>(handle_, 0, 0);
+    std::optional<raft::device_matrix_view<T, int64_t, raft::layout_stride>>
+      new_dataset_buffer_view                                                    = std::nullopt;
+    std::optional<raft::device_matrix_view<IdxT, int64_t>> new_graph_buffer_view = std::nullopt;
+
+    const auto stride =
+      dynamic_cast<const cuvs::neighbors::strided_dataset<T, int64_t>*>(&index->data())
+        ->stride();
+    new_dataset_buffer = raft::make_device_matrix<T, int64_t>(handle_, nrow, stride);
+    new_graph_buffer =
+      raft::make_device_matrix<IdxT, int64_t>(handle_, nrow, index->graph_degree());
+
+    new_dataset_buffer_view = raft::make_device_strided_matrix_view<T, int64_t>(
+      new_dataset_buffer.data_handle(), nrow, dimension_, stride);
+    new_graph_buffer_view = new_graph_buffer.view();
+
+    std::cout << "extend start" << std::endl;
+    cuvs::neighbors::cagra::extend(handle_,
+                                   extend_params,
+                                   raft::make_const_mdspan(additional_dataset.view()),
+                                   *index,
+                                   new_dataset_buffer_view,
+                                   new_graph_buffer_view);
+
+    raft::resource::sync_stream(handle_);
+    std::cout << "extend finished" << std::endl;
+  }
 }
 
 inline auto allocator_to_string(AllocatorType mem_type) -> std::string
