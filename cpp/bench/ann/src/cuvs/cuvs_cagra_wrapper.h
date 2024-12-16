@@ -39,14 +39,17 @@
 #include <rmm/device_uvector.hpp>
 #include <rmm/resource_ref.hpp>
 
+#include <algorithm>
 #include <cassert>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <unordered_set>
 
 namespace cuvs::bench {
 
@@ -176,6 +179,7 @@ class cuvs_cagra : public algo<T>, public algo_gpu {
   bool need_dataset_update_{true};
   cuvs::neighbors::cagra::search_params search_params_;
   std::shared_ptr<cuvs::neighbors::cagra::index<T, IdxT>> index_;
+  std::shared_ptr<cuvs::neighbors::cagra::index<T, IdxT>> index_B_;
   int dimension_;
   std::shared_ptr<raft::device_matrix<IdxT, int64_t, raft::row_major>> graph_;
   std::shared_ptr<raft::device_matrix<T, int64_t, raft::row_major>> dataset_;
@@ -201,62 +205,251 @@ template <typename T, typename IdxT>
 void cuvs_cagra<T, IdxT>::build(const T* dataset, size_t nrow)
 {
   constexpr float extend_ratio = 0.5f;
-  auto dataset_extents = raft::make_extents<IdxT>(IdxT(nrow * (1 - extend_ratio)), dimension_);
-  index_params_.prepare_build_params(dataset_extents);
+  auto stream                  = raft::resource::get_cuda_stream(handle_);
 
+  auto A_extents = raft::make_extents<IdxT>(IdxT(nrow / 2), dimension_);
+  auto B_extents = raft::make_extents<IdxT>(nrow - IdxT(nrow / 2), dimension_);
+
+  auto addtl_A_extents =
+    raft::make_extents<int64_t>(IdxT(A_extents.extent(0) * extend_ratio), dimension_);
+  auto addtl_B_extents =
+    raft::make_extents<int64_t>(IdxT(B_extents.extent(0) * extend_ratio), dimension_);
+
+  auto A_offset = IdxT(0);
+  auto B_offset = A_extents.extent(0) * dimension_;
+
+  auto addtl_A_offset = (A_extents.extent(0) - addtl_A_extents.extent(0)) * dimension_;
+  auto addtl_B_offset = (nrow - addtl_B_extents.extent(0)) * dimension_;
+
+  index_params_.prepare_build_params(A_extents);
   auto& params = index_params_.cagra_params;
-  auto dataset_view_host =
-    raft::make_mdspan<const T, IdxT, raft::row_major, true, false>(dataset, dataset_extents);
-  auto dataset_view_device =
-    raft::make_mdspan<const T, IdxT, raft::row_major, false, true>(dataset, dataset_extents);
+
+  // prep A
+  auto A_view_h =
+    raft::make_mdspan<const T, IdxT, raft::row_major, true, false>(dataset + A_offset, A_extents);
+  auto A_view_d =
+    raft::make_mdspan<const T, IdxT, raft::row_major, false, true>(dataset + A_offset, A_extents);
+
   bool dataset_is_on_host = raft::get_device_for_address(dataset) == -1;
 
   std::cout << "dataset_is_on_host: " << dataset_is_on_host << std::endl;
 
-  index_ = std::make_shared<cuvs::neighbors::cagra::index<T, IdxT>>(std::move(
-    dataset_is_on_host ? cuvs::neighbors::cagra::build(handle_, params, dataset_view_host)
-                       : cuvs::neighbors::cagra::build(handle_, params, dataset_view_device)));
+  index_ = std::make_shared<cuvs::neighbors::cagra::index<T, IdxT>>(
+    std::move(dataset_is_on_host ? cuvs::neighbors::cagra::build(handle_, params, A_view_h)
+                                 : cuvs::neighbors::cagra::build(handle_, params, A_view_d)));
 
+  // prep B
+  index_params_.prepare_build_params(B_extents);
 
-  if constexpr(std::is_same_v<float, T> && extend_ratio > 0.0f) {
-    cuvs::neighbors::cagra::extend_params extend_params;
-    extend_params.max_chunk_size = 1024;
+  auto B_view_h =
+    raft::make_mdspan<const T, IdxT, raft::row_major, true, false>(dataset + B_offset, B_extents);
+  auto B_view_d =
+    raft::make_mdspan<const T, IdxT, raft::row_major, false, true>(dataset + B_offset, B_extents);
 
-    auto stream = raft::resource::get_cuda_stream(handle_);
-    auto additional_dataset =
-      raft::make_host_matrix<T, int64_t>(nrow - IdxT(nrow * (1.0f - extend_ratio)), dimension_);
-    raft::copy(additional_dataset.data_handle(),
-               static_cast<const T*>(dataset) + dataset_view_device.size(),
-               additional_dataset.size(),
+  index_B_ = std::make_shared<cuvs::neighbors::cagra::index<T, IdxT>>(
+    std::move(dataset_is_on_host ? cuvs::neighbors::cagra::build(handle_, params, B_view_h)
+                                 : cuvs::neighbors::cagra::build(handle_, params, B_view_d)));
+
+  cuvs::neighbors::cagra::extend_params extend_params;
+  extend_params.max_chunk_size = 1024;
+
+  // insert 20% of B to A
+  {
+    // prep additional matrix
+    auto target_index = index_.get();
+
+    auto addtl_extents = addtl_B_extents;
+    auto addtl_offset  = addtl_B_offset;
+
+    auto addtl_matrix = raft::make_device_matrix<T, int64_t>(
+      handle_, addtl_extents.extent(0), addtl_extents.extent(1));
+
+    raft::copy(addtl_matrix.data_handle(),
+               static_cast<const T*>(dataset) + addtl_offset,
+               addtl_matrix.size(),
                stream);
-    auto index = index_.get();
-    auto new_dataset_buffer = raft::make_device_matrix<T, int64_t>(handle_, 0, 0);
-    auto new_graph_buffer   = raft::make_device_matrix<IdxT, int64_t>(handle_, 0, 0);
-    std::optional<raft::device_matrix_view<T, int64_t, raft::layout_stride>>
-      new_dataset_buffer_view                                                    = std::nullopt;
-    std::optional<raft::device_matrix_view<IdxT, int64_t>> new_graph_buffer_view = std::nullopt;
 
-    const auto stride =
-      dynamic_cast<const cuvs::neighbors::strided_dataset<T, int64_t>*>(&index->data())
-        ->stride();
-    new_dataset_buffer = raft::make_device_matrix<T, int64_t>(handle_, nrow, stride);
-    new_graph_buffer =
-      raft::make_device_matrix<IdxT, int64_t>(handle_, nrow, index->graph_degree());
+    std::cout << "A target_index->size before extend: " << index_.get()->size() << std::endl;
+    if constexpr (std::is_same_v<float, T> && extend_ratio > 0.0f) {
+      std::cout << "extend start A + 20% of B" << std::endl;
+      cuvs::neighbors::cagra::extend(
+        handle_, extend_params, raft::make_const_mdspan(addtl_matrix.view()), *target_index);
 
-    new_dataset_buffer_view = raft::make_device_strided_matrix_view<T, int64_t>(
-      new_dataset_buffer.data_handle(), nrow, dimension_, stride);
-    new_graph_buffer_view = new_graph_buffer.view();
+      raft::resource::sync_stream(handle_);
+      std::cout << "extend end A + 20% of B" << std::endl;
+    }
+    std::cout << "A target_index->size: " << index_.get()->size() << std::endl;
+  }
 
-    std::cout << "extend start" << std::endl;
-    cuvs::neighbors::cagra::extend(handle_,
-                                   extend_params,
-                                   raft::make_const_mdspan(additional_dataset.view()),
-                                   *index,
-                                   new_dataset_buffer_view,
-                                   new_graph_buffer_view);
+  // insert 20% of A to B
+  {
+    // prep additional matrix
+    auto target_index = index_B_.get();
 
+    auto addtl_extents = addtl_A_extents;
+    auto addtl_offset  = addtl_A_offset;
+
+    auto addtl_matrix = raft::make_device_matrix<T, int64_t>(
+      handle_, addtl_extents.extent(0), addtl_extents.extent(1));
+
+    raft::copy(addtl_matrix.data_handle(),
+               static_cast<const T*>(dataset) + addtl_offset,
+               addtl_matrix.size(),
+               stream);
+
+    if constexpr (std::is_same_v<float, T> && extend_ratio > 0.0f) {
+      std::cout << "extend start B + 20% of A" << std::endl;
+      cuvs::neighbors::cagra::extend(
+        handle_, extend_params, raft::make_const_mdspan(addtl_matrix.view()), *target_index);
+
+      raft::resource::sync_stream(handle_);
+      std::cout << "extend end B + 20% of A" << std::endl;
+    }
+    std::cout << "B target_index->size: " << index_B_.get()->size() << std::endl;
+  }
+
+  raft::resource::sync_stream(handle_);
+  size_t A_graph_size = index_.get()->size() * index_.get()->graph_degree();
+  size_t B_graph_size = index_B_.get()->size() * index_B_.get()->graph_degree();
+  std::cout << "A_graph_size: " << A_graph_size << std::endl;
+  std::cout << "B_graph_size: " << B_graph_size << std::endl;
+
+  std::cout << std::endl;
+  std::cout << "index_.get()->graph_degree(): " << index_.get()->graph_degree() << std::endl;
+
+  std::vector<IdxT> A_graph_h(A_graph_size);
+  std::vector<IdxT> B_graph_h(B_graph_size);
+
+  {
+    raft::copy(A_graph_h.data(), index_.get()->graph().data_handle(), A_graph_size, stream);
     raft::resource::sync_stream(handle_);
-    std::cout << "extend finished" << std::endl;
+
+    raft::copy(B_graph_h.data(), index_B_.get()->graph().data_handle(), B_graph_size, stream);
+    raft::resource::sync_stream(handle_);
+
+    size_t counter             = 0;
+    auto addtl_B_adjust_offset = nrow - addtl_B_extents.extent(0) - A_extents.extent(0);
+
+    std::cout << "nrow: " << nrow << std::endl;
+    std::cout << "addtl_B_adjust_offset: " << addtl_B_adjust_offset << std::endl;
+
+    for (IdxT& n : A_graph_h) {
+      if (n >= A_extents.extent(0)) { n += addtl_B_adjust_offset; }
+    }
+    std::cout << "A counter: " << counter << std::endl;
+
+    counter                    = 0;
+    auto addtl_A_adjust_offset = 0;
+
+    for (IdxT& n : B_graph_h) {
+      if (n < B_extents.extent(0)) { counter++; }
+
+      addtl_A_adjust_offset =
+        (n < B_extents.extent(0))
+          ? A_extents.extent(0)
+          : (A_extents.extent(0) - addtl_A_extents.extent(0) - B_extents.extent(0));
+      n += addtl_A_adjust_offset;
+    }
+    std::cout << "B counter: " << counter << std::endl;
+
+    std::cout << "addtl_A_adjust_offset1: " << A_extents.extent(0) << std::endl;
+    std::cout << "addtl_A_adjust_offset2: "
+              << A_extents.extent(0) - addtl_A_extents.extent(0) - B_extents.extent(0) << std::endl;
+  }
+
+  // zip merge
+  size_t merged_graph_size = nrow * index_.get()->graph_degree();
+  std::vector<IdxT> merged_graph_h(merged_graph_size);
+  {
+    raft::copy(merged_graph_h.data(),
+               A_graph_h.data(),
+               (A_extents.extent(0) - addtl_A_extents.extent(0)) * index_.get()->graph_degree(),
+               stream);
+
+    std::unordered_set<IdxT> temp_set(index_.get()->graph_degree());
+
+    for (int64_t r = 0; r < addtl_A_extents.extent(0); r++) {
+      IdxT* A = A_graph_h.data() + (A_extents.extent(0) - addtl_A_extents.extent(0) + r) *
+                                     index_.get()->graph_degree();
+      IdxT* B = B_graph_h.data() + (B_extents.extent(0) + r) * index_.get()->graph_degree();
+
+      IdxT* merged = merged_graph_h.data() + (A_extents.extent(0) - addtl_A_extents.extent(0) + r) *
+                                               index_.get()->graph_degree();
+
+      size_t counter = 0;
+      temp_set.clear();
+      for (size_t n = 0; n < index_.get()->graph_degree(); n++) {
+        IdxT candi_A = A[n];
+        IdxT candi_B = B[n];
+        if (temp_set.find(candi_A) == temp_set.end()) {
+          merged[counter] = candi_A;
+          counter++;
+          temp_set.insert(candi_A);
+          if (counter >= index_.get()->graph_degree()) break;
+        }
+        if (temp_set.find(candi_B) == temp_set.end()) {
+          merged[counter] = candi_B;
+          counter++;
+          temp_set.insert(candi_B);
+          if (counter >= index_.get()->graph_degree()) break;
+        }
+      }
+    }
+
+    raft::copy(merged_graph_h.data() + A_extents.extent(0) * index_.get()->graph_degree(),
+               B_graph_h.data(),
+               (B_extents.extent(0) - addtl_B_extents.extent(0)) * index_.get()->graph_degree(),
+               stream);
+
+    for (int64_t r = 0; r < addtl_B_extents.extent(0); r++) {
+      IdxT* B = B_graph_h.data() + (B_extents.extent(0) - addtl_B_extents.extent(0) + r) *
+                                     index_.get()->graph_degree();
+      IdxT* A = A_graph_h.data() + (A_extents.extent(0) + r) * index_.get()->graph_degree();
+
+      IdxT* merged = merged_graph_h.data() +
+                     (nrow - addtl_B_extents.extent(0) + r) * index_.get()->graph_degree();
+
+      size_t counter = 0;
+      temp_set.clear();
+      for (size_t n = 0; n < index_.get()->graph_degree(); n++) {
+        IdxT candi_A = A[n];
+        IdxT candi_B = B[n];
+        if (temp_set.find(candi_B) == temp_set.end()) {
+          merged[counter] = candi_B;
+          counter++;
+          temp_set.insert(candi_B);
+          if (counter >= index_.get()->graph_degree()) break;
+        }
+        if (temp_set.find(candi_A) == temp_set.end()) {
+          merged[counter] = candi_A;
+          counter++;
+          temp_set.insert(candi_A);
+          if (counter >= index_.get()->graph_degree()) break;
+        }
+      }
+    }
+  }
+
+  // update dataset and graph
+  if constexpr (std::is_same_v<float, T>) {
+    const auto degree    = index_.get()->graph_degree();
+    auto dataset_extents = raft::make_extents<int64_t>(nrow, dimension_);
+
+    auto dataset_view_host =
+      raft::make_mdspan<const T, int64_t, raft::row_major, false, true>(dataset, dataset_extents);
+    index_.get()->update_dataset(handle_, dataset_view_host);
+
+    // update graph
+    auto updated_graph = raft::make_host_matrix<IdxT, std::int64_t>(nrow, degree);
+    assert(updated_graph.size() == merged_graph_h.size());
+    raft::copy(updated_graph.data_handle(),
+               merged_graph_h.data(),
+               merged_graph_h.size(),
+               raft::resource::get_cuda_stream(handle_));
+
+    index_.get()->update_graph(handle_, raft::make_const_mdspan(updated_graph.view()));
+    std::cout << "lase dataset().size(): " << index_.get()->dataset().size() << std::endl;
+    std::cout << "lase graph()->size() " << index_.get()->size() << std::endl;
   }
 }
 
