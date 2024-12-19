@@ -41,6 +41,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -156,7 +157,7 @@ class cuvs_cagra : public algo<T>, public algo_gpu {
   [[nodiscard]] auto get_preference() const -> algo_property override
   {
     algo_property property;
-    property.dataset_memory_type = MemoryType::kHostMmap;
+    property.dataset_memory_type = MemoryType::kDevice;
     property.query_memory_type   = MemoryType::kDevice;
     return property;
   }
@@ -201,10 +202,29 @@ class cuvs_cagra : public algo<T>, public algo_gpu {
   }
 };
 
+/*
 template <typename T, typename IdxT>
 void cuvs_cagra<T, IdxT>::build(const T* dataset, size_t nrow)
 {
-  constexpr float extend_ratio = 0.5f;
+  auto dataset_extents = raft::make_extents<IdxT>(nrow, dimension_);
+  index_params_.prepare_build_params(dataset_extents);
+
+  auto& params = index_params_.cagra_params;
+  auto dataset_view_host =
+    raft::make_mdspan<const T, IdxT, raft::row_major, true, false>(dataset, dataset_extents);
+  auto dataset_view_device =
+    raft::make_mdspan<const T, IdxT, raft::row_major, false, true>(dataset, dataset_extents);
+  bool dataset_is_on_host = raft::get_device_for_address(dataset) == -1;
+
+  index_ = std::make_shared<cuvs::neighbors::cagra::index<T, IdxT>>(std::move(
+    dataset_is_on_host ? cuvs::neighbors::cagra::build(handle_, params, dataset_view_host)
+                       : cuvs::neighbors::cagra::build(handle_, params, dataset_view_device)));
+}
+*/
+template <typename T, typename IdxT>
+void cuvs_cagra<T, IdxT>::build(const T* dataset, size_t nrow)
+{
+  constexpr float extend_ratio = 0.2f;
   auto stream                  = raft::resource::get_cuda_stream(handle_);
 
   auto A_extents = raft::make_extents<IdxT>(IdxT(nrow / 2), dimension_);
@@ -251,34 +271,33 @@ void cuvs_cagra<T, IdxT>::build(const T* dataset, size_t nrow)
                                  : cuvs::neighbors::cagra::build(handle_, params, B_view_d)));
 
   cuvs::neighbors::cagra::extend_params extend_params;
-  extend_params.max_chunk_size = 1024;
 
   // insert 20% of B to A
   {
     // prep additional matrix
     auto target_index = index_.get();
 
-    auto addtl_extents = addtl_B_extents;
-    auto addtl_offset  = addtl_B_offset;
+    auto addtl_extents           = addtl_B_extents;
+    auto addtl_offset            = addtl_B_offset;
+    extend_params.max_chunk_size = addtl_extents.extent(0);
 
-    auto addtl_matrix = raft::make_device_matrix<T, int64_t>(
-      handle_, addtl_extents.extent(0), addtl_extents.extent(1));
+    auto addtl_matrix_view =
+      raft::make_device_matrix_view<const T, int64_t>(static_cast<const T*>(dataset) + addtl_offset,
+                                                      addtl_extents.extent(0),
+                                                      addtl_extents.extent(1));
 
-    raft::copy(addtl_matrix.data_handle(),
-               static_cast<const T*>(dataset) + addtl_offset,
-               addtl_matrix.size(),
-               stream);
-
-    std::cout << "A target_index->size before extend: " << index_.get()->size() << std::endl;
     if constexpr (std::is_same_v<float, T> && extend_ratio > 0.0f) {
-      std::cout << "extend start A + 20% of B" << std::endl;
-      cuvs::neighbors::cagra::extend(
-        handle_, extend_params, raft::make_const_mdspan(addtl_matrix.view()), *target_index);
-
       raft::resource::sync_stream(handle_);
-      std::cout << "extend end A + 20% of B" << std::endl;
+      auto start_gpu = std::chrono::high_resolution_clock::now();
+
+      cuvs::neighbors::cagra::extend(
+        handle_, extend_params, raft::make_const_mdspan(addtl_matrix_view), *target_index);
+      raft::resource::sync_stream(handle_);
+
+      auto end_gpu = std::chrono::high_resolution_clock::now();
+      printf("neighbors::cagra::extend time: %f s\n",
+             std::chrono::duration<double>(end_gpu - start_gpu).count());
     }
-    std::cout << "A target_index->size: " << index_.get()->size() << std::endl;
   }
 
   // insert 20% of A to B
@@ -286,27 +305,29 @@ void cuvs_cagra<T, IdxT>::build(const T* dataset, size_t nrow)
     // prep additional matrix
     auto target_index = index_B_.get();
 
-    auto addtl_extents = addtl_A_extents;
-    auto addtl_offset  = addtl_A_offset;
+    auto addtl_extents           = addtl_A_extents;
+    auto addtl_offset            = addtl_A_offset;
+    extend_params.max_chunk_size = addtl_extents.extent(0);
 
-    auto addtl_matrix = raft::make_device_matrix<T, int64_t>(
-      handle_, addtl_extents.extent(0), addtl_extents.extent(1));
-
-    raft::copy(addtl_matrix.data_handle(),
-               static_cast<const T*>(dataset) + addtl_offset,
-               addtl_matrix.size(),
-               stream);
-
+    auto addtl_matrix_view =
+      raft::make_device_matrix_view<const T, int64_t>(static_cast<const T*>(dataset) + addtl_offset,
+                                                      addtl_extents.extent(0),
+                                                      addtl_extents.extent(1));
     if constexpr (std::is_same_v<float, T> && extend_ratio > 0.0f) {
-      std::cout << "extend start B + 20% of A" << std::endl;
-      cuvs::neighbors::cagra::extend(
-        handle_, extend_params, raft::make_const_mdspan(addtl_matrix.view()), *target_index);
-
+#include <chrono>
       raft::resource::sync_stream(handle_);
-      std::cout << "extend end B + 20% of A" << std::endl;
+      auto start_gpu = std::chrono::high_resolution_clock::now();
+
+      cuvs::neighbors::cagra::extend(
+        handle_, extend_params, raft::make_const_mdspan(addtl_matrix_view), *target_index);
+      raft::resource::sync_stream(handle_);
+
+      auto end_gpu = std::chrono::high_resolution_clock::now();
+      printf("neighbors::cagra::extend time: %f s\n",
+             std::chrono::duration<double>(end_gpu - start_gpu).count());
     }
-    std::cout << "B target_index->size: " << index_B_.get()->size() << std::endl;
   }
+  return;
 
   raft::resource::sync_stream(handle_);
   size_t A_graph_size = index_.get()->size() * index_.get()->graph_degree();
