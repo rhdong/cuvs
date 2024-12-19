@@ -202,7 +202,6 @@ class cuvs_cagra : public algo<T>, public algo_gpu {
   }
 };
 
-/*
 template <typename T, typename IdxT>
 void cuvs_cagra<T, IdxT>::build(const T* dataset, size_t nrow)
 {
@@ -216,11 +215,20 @@ void cuvs_cagra<T, IdxT>::build(const T* dataset, size_t nrow)
     raft::make_mdspan<const T, IdxT, raft::row_major, false, true>(dataset, dataset_extents);
   bool dataset_is_on_host = raft::get_device_for_address(dataset) == -1;
 
+  raft::resource::sync_stream(handle_);
+  auto start_gpu = std::chrono::high_resolution_clock::now();
+
   index_ = std::make_shared<cuvs::neighbors::cagra::index<T, IdxT>>(std::move(
     dataset_is_on_host ? cuvs::neighbors::cagra::build(handle_, params, dataset_view_host)
                        : cuvs::neighbors::cagra::build(handle_, params, dataset_view_device)));
+
+  raft::resource::sync_stream(handle_);
+  auto end_gpu = std::chrono::high_resolution_clock::now();
+  printf("neighbors::cagra::build time: %f s\n",
+         std::chrono::duration<double>(end_gpu - start_gpu).count());
 }
-*/
+
+/*
 template <typename T, typename IdxT>
 void cuvs_cagra<T, IdxT>::build(const T* dataset, size_t nrow)
 {
@@ -473,7 +481,7 @@ void cuvs_cagra<T, IdxT>::build(const T* dataset, size_t nrow)
     std::cout << "lase graph()->size() " << index_.get()->size() << std::endl;
   }
 }
-
+*/
 inline auto allocator_to_string(AllocatorType mem_type) -> std::string
 {
   if (mem_type == AllocatorType::kDevice) {
