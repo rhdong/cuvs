@@ -70,7 +70,7 @@ void add_node_core(
              new_size,
              raft::resource::get_cuda_stream(handle));
 
-  const std::size_t max_chunk_size = 1024;
+  const std::size_t max_chunk_size = 1000000;
 
   cuvs::neighbors::cagra::search_params params;
   params.itopk_size = std::max(base_degree * 2lu, 256lu);

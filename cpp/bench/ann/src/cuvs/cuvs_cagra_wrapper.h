@@ -202,6 +202,7 @@ class cuvs_cagra : public algo<T>, public algo_gpu {
   }
 };
 
+/*
 template <typename T, typename IdxT>
 void cuvs_cagra<T, IdxT>::build(const T* dataset, size_t nrow)
 {
@@ -227,8 +228,7 @@ void cuvs_cagra<T, IdxT>::build(const T* dataset, size_t nrow)
   printf("neighbors::cagra::build time: %f s\n",
          std::chrono::duration<double>(end_gpu - start_gpu).count());
 }
-
-/*
+*/
 template <typename T, typename IdxT>
 void cuvs_cagra<T, IdxT>::build(const T* dataset, size_t nrow)
 {
@@ -481,7 +481,7 @@ void cuvs_cagra<T, IdxT>::build(const T* dataset, size_t nrow)
     std::cout << "lase graph()->size() " << index_.get()->size() << std::endl;
   }
 }
-*/
+
 inline auto allocator_to_string(AllocatorType mem_type) -> std::string
 {
   if (mem_type == AllocatorType::kDevice) {
