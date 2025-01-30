@@ -87,7 +87,8 @@ void tiled_brute_force_knn(const raft::resources& handle,
                            const DistanceT* precomputed_search_norms = nullptr,
                            const uint32_t* filter_bits               = nullptr,
                            DistanceEpilogue distance_epilogue        = raft::identity_op(),
-                           FilterType filter_type                    = FilterType::Bitmap)
+                           cuvs::neighbors::filtering::FilterType filter_type =
+                             cuvs::neighbors::filtering::FilterType::Bitmap)
 {
   // Figure out the number of rows/cols to tile for
   size_t tile_rows = 0;
@@ -255,7 +256,7 @@ void tiled_brute_force_knn(const raft::resources& handle,
                                              : std::numeric_limits<DistanceT>::lowest();
 
       if (filter_bits != nullptr) {
-        size_t n_cols = filter_type == FilterType::Bitmap ? n : 0;
+        size_t n_cols = filter_type == cuvs::neighbors::filtering::FilterType::Bitmap ? n : 0;
         thrust::for_each(raft::resource::get_thrust_policy(handle),
                          count,
                          count + current_query_size * current_centroid_size,
@@ -607,11 +608,11 @@ void brute_force_search_filtered(
                                     metric == cuvs::distance::DistanceType::CosineExpanded),
                "Index must has norms when using Euclidean, IP, and Cosine!");
 
-  IdxT n_queries         = queries.extent(0);
-  IdxT n_dataset         = idx.dataset().extent(0);
-  IdxT dim               = idx.dataset().extent(1);
-  IdxT k                 = neighbors.extent(1);
-  FilterType filter_type = filter->get_filter_type();
+  IdxT n_queries                                     = queries.extent(0);
+  IdxT n_dataset                                     = idx.dataset().extent(0);
+  IdxT dim                                           = idx.dataset().extent(1);
+  IdxT k                                             = neighbors.extent(1);
+  cuvs::neighbors::filtering::FilterType filter_type = filter->get_filter_type();
 
   auto stream = raft::resource::get_cuda_stream(res);
 
@@ -624,13 +625,13 @@ void brute_force_search_filtered(
 
   const BitsT* filter_data = nullptr;
 
-  if (filter_type == FilterType::Bitmap) {
+  if (filter_type == cuvs::neighbors::filtering::FilterType::Bitmap) {
     auto actual_filter =
       dynamic_cast<const cuvs::neighbors::filtering::bitmap_filter<BitsT, int64_t>*>(filter);
     filter_view.emplace(actual_filter->view());
     nnz_h    = actual_filter->view().count(res);
     sparsity = 1.0 - nnz_h / (1.0 * n_queries * n_dataset);
-  } else if (filter_type == FilterType::Bitset) {
+  } else if (filter_type == cuvs::neighbors::filtering::FilterType::Bitset) {
     auto actual_filter =
       dynamic_cast<const cuvs::neighbors::filtering::bitset_filter<BitsT, int64_t>*>(filter);
     filter_view.emplace(actual_filter->view());
