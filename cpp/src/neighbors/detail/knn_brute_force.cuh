@@ -752,7 +752,8 @@ void search(raft::resources const& res,
             const cuvs::neighbors::filtering::base_filter& sample_filter_ref)
 {
   try {
-    auto& sample_filter = dynamic_cast<const none_sample_filter&>(sample_filter_ref);
+    auto& sample_filter =
+      dynamic_cast<const uvs::neighbors::filtering::none_sample_filter&>(sample_filter_ref);
     return brute_force_search<T, int64_t, DistT>(res, idx, queries, neighbors, distances);
   } catch (const std::bad_cast&) {
   }
