@@ -62,7 +62,6 @@
 
 namespace cuvs::neighbors::detail {
 
-using namespace cuvs::neighbors::filtering;
 /**
  * Calculates brute force knn, using a fixed memory budget
  * by tiling over both the rows and columns of pairwise_distances
@@ -587,7 +586,7 @@ void brute_force_search_filtered(
   raft::resources const& res,
   const cuvs::neighbors::brute_force::index<T, DistanceT>& idx,
   raft::device_matrix_view<const T, IdxT, raft::row_major> queries,
-  const base_filter* filter,
+  const cuvs::neighbors::filtering::base_filter* filter,
   raft::device_matrix_view<IdxT, IdxT, raft::row_major> neighbors,
   raft::device_matrix_view<DistanceT, IdxT, raft::row_major> distances,
   std::optional<raft::device_vector_view<const DistanceT, IdxT>> query_norms = std::nullopt)
@@ -626,12 +625,14 @@ void brute_force_search_filtered(
   const BitsT* filter_data = nullptr;
 
   if (filter_type == FilterType::Bitmap) {
-    auto actual_filter = dynamic_cast<const bitmap_filter<BitsT, int64_t>*>(filter);
+    auto actual_filter =
+      dynamic_cast<const cuvs::neighbors::filtering::bitmap_filter<BitsT, int64_t>*>(filter);
     filter_view.emplace(actual_filter->view());
     nnz_h    = actual_filter->view().count(res);
     sparsity = 1.0 - nnz_h / (1.0 * n_queries * n_dataset);
   } else if (filter_type == FilterType::Bitset) {
-    auto actual_filter = dynamic_cast<const bitset_filter<BitsT, int64_t>*>(filter);
+    auto actual_filter =
+      dynamic_cast<const cuvs::neighbors::filtering::bitset_filter<BitsT, int64_t>*>(filter);
     filter_view.emplace(actual_filter->view());
     nnz_h    = n_queries * actual_filter->view().count(res);
     sparsity = 1.0 - nnz_h / (1.0 * n_queries * n_dataset);
@@ -747,7 +748,7 @@ void search(raft::resources const& res,
             raft::device_matrix_view<const T, int64_t, LayoutT> queries,
             raft::device_matrix_view<int64_t, int64_t, raft::row_major> neighbors,
             raft::device_matrix_view<DistT, int64_t, raft::row_major> distances,
-            const base_filter& sample_filter_ref)
+            const cuvs::neighbors::filtering::base_filter& sample_filter_ref)
 {
   try {
     auto& sample_filter = dynamic_cast<const none_sample_filter&>(sample_filter_ref);
@@ -759,7 +760,8 @@ void search(raft::resources const& res,
   } else {
     try {
       auto& sample_filter =
-        dynamic_cast<const bitmap_filter<uint32_t, int64_t>&>(sample_filter_ref);
+        dynamic_cast<const cuvs::neighbors::filtering::bitmap_filter<uint32_t, int64_t>&>(
+          sample_filter_ref);
       return brute_force_search_filtered<T, int64_t, uint32_t, DistT>(
         res, idx, queries, &sample_filter, neighbors, distances);
     } catch (const std::bad_cast&) {
@@ -767,7 +769,8 @@ void search(raft::resources const& res,
 
     try {
       auto& sample_filter =
-        dynamic_cast<const bitset_filter<uint32_t, int64_t>&>(sample_filter_ref);
+        dynamic_cast<const cuvs::neighbors::filtering::bitset_filter<uint32_t, int64_t>&>(
+          sample_filter_ref);
       return brute_force_search_filtered<T, int64_t, uint32_t, DistT>(
         res, idx, queries, &sample_filter, neighbors, distances);
     } catch (const std::bad_cast&) {
