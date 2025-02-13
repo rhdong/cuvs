@@ -96,7 +96,7 @@ cuvsCagraIndex_t build_cagra_index(float *dataset, long rows, long dimensions, c
   cuvsStreamGet(cuvs_resources, &stream);
 
   omp_set_num_threads(n_writer_threads);
-  cuvsRMMPoolMemoryResourceEnable(95, 95, false);
+  //cuvsRMMPoolMemoryResourceEnable(95, 95, false);
 
   int64_t dataset_shape[2] = {rows, dimensions};
   DLManagedTensor dataset_tensor = prepare_tensor(dataset, dataset_shape, kDLFloat, 32, 2, kDLCUDA);
@@ -226,7 +226,7 @@ cuvsBruteForceIndex_t build_brute_force_index(float *dataset, long rows, long di
   int *return_value, int n_writer_threads) {
 
   omp_set_num_threads(n_writer_threads);
-  cuvsRMMPoolMemoryResourceEnable(95, 95, false);
+  //cuvsRMMPoolMemoryResourceEnable(95, 95, false);
 
   cudaStream_t stream;
   cuvsStreamGet(cuvs_resources, &stream);
