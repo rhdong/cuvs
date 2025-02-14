@@ -83,8 +83,8 @@ public class CagraBuildAndSearchIT extends CuVSTestCase {
         // Configure index parameters
         CagraIndexParams indexParams = new CagraIndexParams.Builder()
             .withCagraGraphBuildAlgo(CagraGraphBuildAlgo.NN_DESCENT)
-            .withGraphDegree(1)
-            .withIntermediateGraphDegree(2)
+            .withGraphDegree(64)
+            .withIntermediateGraphDegree(128)
             .withNumWriterThreads(32)
             .withMetric(CuvsDistanceType.L2Expanded)
             .build();
