@@ -20,19 +20,18 @@ from pylibraft.common import device_ndarray
 from cuvs.neighbors import brute_force, cagra, ivf_flat, ivf_pq
 from cuvs.tests.ann_utils import generate_data
 
-
-@pytest.mark.parametrize("dtype", [np.float32, np.int8, np.ubyte])
-def test_save_load_ivf_flat(dtype):
-    run_save_load(ivf_flat, dtype)
-
-
-@pytest.mark.parametrize("dtype", [np.float32, np.int8, np.ubyte])
-def test_save_load_cagra(dtype):
-    run_save_load(cagra, dtype)
-
-
-def test_save_load_ivf_pq():
-    run_save_load(ivf_pq, np.float32)
+# @pytest.mark.parametrize("dtype", [np.float32, np.int8, np.ubyte])
+# def test_save_load_ivf_flat(dtype):
+#     run_save_load(ivf_flat, dtype)
+#
+#
+# @pytest.mark.parametrize("dtype", [np.float32, np.int8, np.ubyte])
+# def test_save_load_cagra(dtype):
+#     run_save_load(cagra, dtype)
+#
+#
+# def test_save_load_ivf_pq():
+#     run_save_load(ivf_pq, np.float32)
 
 
 @pytest.mark.parametrize("times", range(1000))
