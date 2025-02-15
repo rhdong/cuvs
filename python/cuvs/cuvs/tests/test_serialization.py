@@ -35,7 +35,7 @@ def test_save_load_ivf_pq():
     run_save_load(ivf_pq, np.float32)
 
 
-@pytest.mark.parametrize("times", range(20))
+@pytest.mark.parametrize("times", range(100))
 def test_save_load_brute_force(times):
     run_save_load(brute_force, np.float32)
 
