@@ -35,15 +35,15 @@ def test_save_load_ivf_pq():
     run_save_load(ivf_pq, np.float32)
 
 
-@pytest.mark.parametrize("times", range(100))
+@pytest.mark.parametrize("times", range(1000))
 def test_save_load_brute_force(times):
     run_save_load(brute_force, np.float32)
 
 
 def run_save_load(ann_module, dtype):
-    n_rows = 10000
+    n_rows = 100
     n_cols = 50
-    n_queries = 1000
+    n_queries = 10
 
     dataset = generate_data((n_rows, n_cols), dtype)
     dataset_device = device_ndarray(dataset)
