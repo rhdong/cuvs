@@ -89,12 +89,12 @@ def run_save_load(ann_module, dtype):
 
     neighbors2 = neighbors_dev.copy_to_host()
     dist2 = distance_dev.copy_to_host()
-    print("dist:\n", dist)
-    print("dist2:\n", dist2)
-    print("Difference (dist - dist2):\n", dist - dist2)
-    print("Max difference:", np.max(np.abs(dist - dist2)))
-    print("dataset:", dataset)
-    print("queries:", queries)
+    # print("dist:\n", dist)
+    # print("dist2:\n", dist2)
+    # print("Difference (dist - dist2):\n", dist - dist2)
+    # print("Max difference:", np.max(np.abs(dist - dist2)))
+    # print("dataset:", dataset)
+    # print("queries:", queries)
 
     assert np.allclose(dist, dist2, rtol=1e-6)
     assert np.all(neighbors == neighbors2)
