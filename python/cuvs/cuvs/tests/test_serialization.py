@@ -84,6 +84,12 @@ def run_save_load(ann_module, dtype):
         distance_dev, neighbors_dev = ann_module.search(
             search_params, loaded_index, queries_device, k
         )
+    print("dist:\n", dist)
+    print("dist2:\n", dist2)
+    print("Difference (dist - dist2):\n", dist - dist2)
+    print("Max difference:", np.max(np.abs(dist - dist2)))
+
+    np.set_printoptions(threshold=np.inf)
 
     neighbors2 = neighbors_dev.copy_to_host()
     dist2 = distance_dev.copy_to_host()
