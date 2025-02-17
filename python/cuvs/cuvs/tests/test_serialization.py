@@ -93,6 +93,8 @@ def run_save_load(ann_module, dtype):
     print("dist2:\n", dist2)
     print("Difference (dist - dist2):\n", dist - dist2)
     print("Max difference:", np.max(np.abs(dist - dist2)))
+    print("dataset:", dataset)
+    print("queries:", queries)
 
     assert np.allclose(dist, dist2, rtol=1e-6)
     assert np.all(neighbors == neighbors2)
