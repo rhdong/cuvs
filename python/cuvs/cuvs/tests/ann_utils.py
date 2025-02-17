@@ -19,15 +19,14 @@ from sklearn.neighbors import NearestNeighbors
 from cuvs.neighbors import filters
 
 
-def generate_data(shape, dtype, seed = None):
+def generate_data(shape, dtype, seed=None):
     np.random.seed(seed)
     if dtype == np.byte:
         x = np.random.randint(-127, 128, size=shape, dtype=np.byte)
     elif dtype == np.ubyte:
         x = np.random.randint(0, 255, size=shape, dtype=np.ubyte)
     else:
-        x = np.random.normal(loc=5, scale=10, size=shape).astype(dtype)
-        x += np.random.uniform(-2, 2, size=shape).astype(dtype)
+        x = np.random.normal(loc=0, scale=100, size=shape).astype(dtype)
     return x
 
 
