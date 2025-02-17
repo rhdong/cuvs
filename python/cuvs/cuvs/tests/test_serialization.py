@@ -41,7 +41,7 @@ def test_save_load_brute_force(times):
 
 def run_save_load(ann_module, dtype):
     n_rows = 10000
-    n_cols = 50
+    n_cols = 100
     n_queries = 100
 
     dataset = generate_data((n_rows, n_cols), dtype)
