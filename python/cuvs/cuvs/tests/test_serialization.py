@@ -48,7 +48,7 @@ def run_save_load(ann_module, dtype):
     dataset_device = device_ndarray(dataset)
 
     if ann_module == brute_force:
-        index = ann_module.build(dataset_device)
+        index = ann_module.build(dataset_device, metric = "euclidean")
     else:
         build_params = ann_module.IndexParams()
         index = ann_module.build(build_params, dataset_device)
