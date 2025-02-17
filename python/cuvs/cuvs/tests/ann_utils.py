@@ -25,7 +25,7 @@ def generate_data(shape, dtype):
     elif dtype == np.ubyte:
         x = np.random.randint(0, 255, size=shape, dtype=np.ubyte)
     else:
-        x = np.random.normal(loc=0, scale=5, size=shape).astype(dtype)
+        x = np.random.normal(loc=0, scale=50, size=shape).astype(dtype)
 
     return x
 
