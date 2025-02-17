@@ -88,5 +88,5 @@ def run_save_load(ann_module, dtype):
     neighbors2 = neighbors_dev.copy_to_host()
     dist2 = distance_dev.copy_to_host()
 
-    assert np.all(neighbors == neighbors2)
     assert np.allclose(dist, dist2, rtol=1e-6)
+    assert np.all(neighbors == neighbors2)
