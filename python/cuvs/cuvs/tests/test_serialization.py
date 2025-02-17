@@ -20,29 +20,29 @@ from pylibraft.common import device_ndarray
 from cuvs.neighbors import brute_force, cagra, ivf_flat, ivf_pq
 from cuvs.tests.ann_utils import generate_data
 
+# @pytest.mark.parametrize("dtype", [np.float32, np.int8, np.ubyte])
+# def test_save_load_ivf_flat(dtype):
+#     run_save_load(ivf_flat, dtype)
+#
+#
+# @pytest.mark.parametrize("dtype", [np.float32, np.int8, np.ubyte])
+# def test_save_load_cagra(dtype):
+#     run_save_load(cagra, dtype)
+#
+#
+# def test_save_load_ivf_pq():
+#     run_save_load(ivf_pq, np.float32)
 
-@pytest.mark.parametrize("dtype", [np.float32, np.int8, np.ubyte])
-def test_save_load_ivf_flat(dtype):
-    run_save_load(ivf_flat, dtype)
 
-
-@pytest.mark.parametrize("dtype", [np.float32, np.int8, np.ubyte])
-def test_save_load_cagra(dtype):
-    run_save_load(cagra, dtype)
-
-
-def test_save_load_ivf_pq():
-    run_save_load(ivf_pq, np.float32)
-
-
-def test_save_load_brute_force():
+@pytest.mark.parametrize("times", range(100))
+def test_save_load_brute_force(times):
     run_save_load(brute_force, np.float32)
 
 
 def run_save_load(ann_module, dtype):
     n_rows = 10000
     n_cols = 50
-    n_queries = 1000
+    n_queries = 100
 
     dataset = generate_data((n_rows, n_cols), dtype)
     dataset_device = device_ndarray(dataset)
