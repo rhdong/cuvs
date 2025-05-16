@@ -86,6 +86,113 @@ struct vpq_params {
 /** The base for approximate KNN index structures. */
 struct index {};
 
+/**
+ * @brief Interface for generic ANN index structures.
+ *
+ * This abstract base class defines the minimum set of methods
+ * that any index (e.g., brute-force, IVF, HNSW, CAGRA) must implement
+ * in order to be used as part of a composite index or called generically.
+ *
+ * @tparam T     Data type of vector elements (e.g., float).
+ * @tparam IdxT  Index type for element IDs (e.g., int, int64_t).
+ */
+template <typename T, typename IdxT>
+struct IIndex {
+  virtual ~IIndex() = default;
+
+  /**
+   * @brief Returns the distance metric used by the index.
+   */
+  virtual cuvs::distance::DistanceType metric() const noexcept = 0;
+
+  /**
+   * @brief Returns the number of elements stored in the index.
+   */
+  virtual IdxT size() const noexcept = 0;
+
+  /**
+   * @brief Returns the dimensionality of vectors in the index.
+   */
+  virtual uint32_t dim() const noexcept = 0;
+
+  /**
+   * @brief Returns the graph degree.
+   *
+   * Some graph-based indices (e.g., CAGRA, HNSW) have a fixed number
+   * of neighbors per node. This method returns that number. For non-graph
+   * indices, the default is 0.
+   */
+  virtual uint32_t graph_degree() const noexcept { return 0; }
+};
+
+/**
+ * @brief Generic composite index that holds a collection of IIndex objects
+ *        with consistent metric and dimensionality.
+ */
+template <typename T, typename IdxT>
+class composite_index {
+ public:
+  using IndexPtr = std::shared_ptr<IIndex<T, IdxT>>;
+
+  template <typename Container>
+  explicit composite_index(Container&& indices) : sub_indices(std::forward<Container>(indices))
+  {
+    RAFT_EXPECTS(!sub_indices.empty(), "composite_index requires at least one sub-index.");
+    for (auto& idx : sub_indices) {
+      RAFT_EXPECTS(idx != nullptr, "sub_indices contains a null pointer.");
+    }
+
+    auto& first = sub_indices.front();
+    metric_     = first->metric();
+    dim_        = first->dim();
+    size_       = 0;
+
+    for (auto& idx : sub_indices) {
+      RAFT_EXPECTS(idx->metric() == metric_, "All sub-indices must have the same metric.");
+      RAFT_EXPECTS(idx->dim() == dim_, "All sub-indices must have the same dim.");
+      size_ += idx->size();
+    }
+  }
+
+  cuvs::distance::DistanceType metric() const noexcept { return metric_; }
+  IdxT size() const noexcept { return size_; }
+  uint32_t dim() const noexcept { return dim_; }
+  uint32_t graph_degree() const noexcept { return sub_indices.front()->graph_degree(); }
+  uint32_t num_indices() const noexcept { return sub_indices.size(); }
+
+  const std::vector<IndexPtr>& indices() const noexcept { return sub_indices; }
+
+ private:
+  std::vector<IndexPtr> sub_indices;
+  cuvs::distance::DistanceType metric_;
+  IdxT size_;
+  uint32_t dim_;
+};
+
+/**
+ * @brief Construct a composite_index from a set of raw indices using the given wrapper.
+ *
+ * This is the universal entry point for composing index shards of any backend.
+ *
+ * @tparam T         Data type (e.g., float)
+ * @tparam IdxT      Index type (e.g., int32_t, int64_t)
+ * @tparam RawIndex  The raw index type (e.g., cagra::index<T, IdxT>)
+ * @tparam Wrapper   A class that wraps RawIndex into IIndex<T, IdxT>
+ */
+template <typename T, typename IdxT, typename RawIndex, template <typename, typename> class Wrapper>
+composite_index<T, IdxT> make_composite_index(const std::vector<RawIndex*>& raw_indices)
+{
+  std::vector<std::shared_ptr<IIndex<T, IdxT>>> wrapped;
+  wrapped.reserve(raw_indices.size());
+
+  for (auto* ptr : raw_indices) {
+    RAFT_EXPECTS(ptr != nullptr, "Input index pointer is null.");
+    wrapped.push_back(std::make_shared<Wrapper<T, IdxT>>(ptr));
+  }
+
+  return composite_index<T, IdxT>(std::move(wrapped));
+}
+
 /** The base for KNN index parameters. */
 struct index_params {
   /** Distance type. */

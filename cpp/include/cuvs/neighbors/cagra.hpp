@@ -566,70 +566,28 @@ struct index : cuvs::neighbors::index {
  */
 
 /**
- * @brief Lightweight composite kNN index for CAGRA.
+ * @brief Adapter class to wrap CAGRA index into a generic IIndex interface.
  *
- * This class aggregates logically multiple CAGRA indices into a single composite index,
- * providing a unified interface for kNN search. It is a lightweight structure
- * that does not own or manage the lifecycle of the underlying indices; instead,
- * it holds non-owning pointers to them.
+ * This wrapper enables a cuvs::neighbors::cagra::index<T, IdxT> to be used
+ * polymorphically via the IIndex interface, allowing it to participate
+ * in composite indexing or be used generically across index types.
  *
- * All sub-indices within the composite index **must share the same distance metric
- * and dimensionality**.
- *
- * @tparam T    Data element type.
- * @tparam IdxT Index type representing dataset.extent(0), used for vector indices.
+ * @tparam T     Data type of the vector elements (e.g., float).
+ * @tparam IdxT  Type used for indexing vector IDs (e.g., int, int64_t).
  */
-
 template <typename T, typename IdxT>
-struct composite_index {
-  template <typename Container>
-  explicit composite_index(Container&& indices) : sub_indices(std::forward<Container>(indices))
-  {
-    RAFT_EXPECTS(!sub_indices.empty(), "composite_index requires at least one sub-index.");
-
-    for (auto* idx : sub_indices) {
-      RAFT_EXPECTS(idx != nullptr, "sub_indices contains a null pointer.");
-    }
-
-    auto& first_index = *sub_indices.front();
-    metric_           = first_index.metric();
-    dim_              = first_index.dim();
-    size_             = 0;
-
-    for (auto* idx : sub_indices) {
-      RAFT_EXPECTS(idx->metric() == metric_, "All sub-indices must have the same metric.");
-      RAFT_EXPECTS(idx->dim() == dim_, "All sub-indices must have the same dim.");
-      size_ += idx->size();
-    }
-  }
-
+class CagraIndexWrapper : public IIndex<T, IdxT> {
  public:
-  composite_index(const composite_index& other)            = default;
-  composite_index& operator=(const composite_index& other) = default;
+  explicit CagraIndexWrapper(cuvs::neighbors::cagra::index<T, IdxT>* idx) : index_(idx) {}
 
-  composite_index(composite_index&& other) noexcept            = default;
-  composite_index& operator=(composite_index&& other) noexcept = default;
-
-  constexpr inline auto metric() const noexcept -> cuvs::distance::DistanceType { return metric_; }
-
-  constexpr inline auto size() const noexcept -> IdxT { return size_; }
-
-  constexpr inline auto dim() const noexcept -> uint32_t { return dim_; }
-
-  constexpr inline auto graph_degree() const noexcept -> uint32_t
-  {
-    return sub_indices.front()->graph_degree();
-  }
-
-  constexpr inline auto num_indices() const noexcept -> uint32_t { return sub_indices.size(); }
-
- public:
-  std::vector<cuvs::neighbors::cagra::index<T, IdxT>*> sub_indices;
+  cuvs::distance::DistanceType metric() const noexcept override { return index_->metric(); }
+  IdxT size() const noexcept override { return index_->size(); }
+  uint32_t dim() const noexcept override { return index_->dim(); }
+  uint32_t graph_degree() const noexcept override { return index_->graph_degree(); }
+  cagra::index<T, IdxT>* raw_index() const noexcept { return index_; }
 
  private:
-  cuvs::distance::DistanceType metric_;
-  IdxT size_;
-  uint32_t dim_;
+  cuvs::neighbors::cagra::index<T, IdxT>* index_;
 };
 
 /**
@@ -1395,7 +1353,7 @@ void search(raft::resources const& res,
  */
 void search(raft::resources const& res,
             cuvs::neighbors::cagra::search_params const& params,
-            const cuvs::neighbors::cagra::composite_index<float, uint32_t>& index,
+            const cuvs::neighbors::composite_index<float, uint32_t>& index,
             raft::device_matrix_view<const float, int64_t, raft::row_major> queries,
             raft::device_matrix_view<uint32_t, int64_t, raft::row_major> neighbors,
             raft::device_matrix_view<float, int64_t, raft::row_major> distances,
@@ -1420,7 +1378,7 @@ void search(raft::resources const& res,
  */
 void search(raft::resources const& res,
             cuvs::neighbors::cagra::search_params const& params,
-            const cuvs::neighbors::cagra::composite_index<half, uint32_t>& index,
+            const cuvs::neighbors::composite_index<half, uint32_t>& index,
             raft::device_matrix_view<const half, int64_t, raft::row_major> queries,
             raft::device_matrix_view<uint32_t, int64_t, raft::row_major> neighbors,
             raft::device_matrix_view<float, int64_t, raft::row_major> distances,
@@ -1445,7 +1403,7 @@ void search(raft::resources const& res,
  */
 void search(raft::resources const& res,
             cuvs::neighbors::cagra::search_params const& params,
-            const cuvs::neighbors::cagra::composite_index<int8_t, uint32_t>& index,
+            const cuvs::neighbors::composite_index<int8_t, uint32_t>& index,
             raft::device_matrix_view<const int8_t, int64_t, raft::row_major> queries,
             raft::device_matrix_view<uint32_t, int64_t, raft::row_major> neighbors,
             raft::device_matrix_view<float, int64_t, raft::row_major> distances,
@@ -1470,7 +1428,7 @@ void search(raft::resources const& res,
  */
 void search(raft::resources const& res,
             cuvs::neighbors::cagra::search_params const& params,
-            const cuvs::neighbors::cagra::composite_index<uint8_t, uint32_t>& index,
+            const cuvs::neighbors::composite_index<uint8_t, uint32_t>& index,
             raft::device_matrix_view<const uint8_t, int64_t, raft::row_major> queries,
             raft::device_matrix_view<uint32_t, int64_t, raft::row_major> neighbors,
             raft::device_matrix_view<float, int64_t, raft::row_major> distances,
@@ -1495,7 +1453,7 @@ void search(raft::resources const& res,
  */
 void search(raft::resources const& res,
             cuvs::neighbors::cagra::search_params const& params,
-            const cuvs::neighbors::cagra::composite_index<float, uint32_t>& index,
+            const cuvs::neighbors::composite_index<float, uint32_t>& index,
             raft::device_matrix_view<const float, int64_t, raft::row_major> queries,
             raft::device_matrix_view<int64_t, int64_t, raft::row_major> neighbors,
             raft::device_matrix_view<float, int64_t, raft::row_major> distances,
@@ -1520,7 +1478,7 @@ void search(raft::resources const& res,
  */
 void search(raft::resources const& res,
             cuvs::neighbors::cagra::search_params const& params,
-            const cuvs::neighbors::cagra::composite_index<half, uint32_t>& index,
+            const cuvs::neighbors::composite_index<half, uint32_t>& index,
             raft::device_matrix_view<const half, int64_t, raft::row_major> queries,
             raft::device_matrix_view<int64_t, int64_t, raft::row_major> neighbors,
             raft::device_matrix_view<float, int64_t, raft::row_major> distances,
@@ -1545,7 +1503,7 @@ void search(raft::resources const& res,
  */
 void search(raft::resources const& res,
             cuvs::neighbors::cagra::search_params const& params,
-            const cuvs::neighbors::cagra::composite_index<int8_t, uint32_t>& index,
+            const cuvs::neighbors::composite_index<int8_t, uint32_t>& index,
             raft::device_matrix_view<const int8_t, int64_t, raft::row_major> queries,
             raft::device_matrix_view<int64_t, int64_t, raft::row_major> neighbors,
             raft::device_matrix_view<float, int64_t, raft::row_major> distances,
@@ -1570,7 +1528,7 @@ void search(raft::resources const& res,
  */
 void search(raft::resources const& res,
             cuvs::neighbors::cagra::search_params const& params,
-            const cuvs::neighbors::cagra::composite_index<uint8_t, uint32_t>& index,
+            const cuvs::neighbors::composite_index<uint8_t, uint32_t>& index,
             raft::device_matrix_view<const uint8_t, int64_t, raft::row_major> queries,
             raft::device_matrix_view<int64_t, int64_t, raft::row_major> neighbors,
             raft::device_matrix_view<float, int64_t, raft::row_major> distances,
@@ -2420,6 +2378,7 @@ auto merge(raft::resources const& res,
            std::vector<cuvs::neighbors::cagra::index<uint8_t, uint32_t>*>& indices)
   -> cuvs::neighbors::cagra::index<uint8_t, uint32_t>;
 
+/*
 auto make_composite_index(const cagra::merge_params& params,
                           std::vector<cuvs::neighbors::cagra::index<float, uint32_t>*>& indices)
   -> cuvs::neighbors::cagra::composite_index<float, uint32_t>;
@@ -2434,7 +2393,7 @@ auto make_composite_index(const cagra::merge_params& params,
 
 auto make_composite_index(const cagra::merge_params& params,
                           std::vector<cuvs::neighbors::cagra::index<uint8_t, uint32_t>*>& indices)
-  -> cuvs::neighbors::cagra::composite_index<uint8_t, uint32_t>;
+  -> cuvs::neighbors::cagra::composite_index<uint8_t, uint32_t>; */
 
 /**
  * @}
