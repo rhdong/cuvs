@@ -29,6 +29,8 @@
 
 #include <cuvs/distance/distance.hpp>
 
+#include <memory>
+
 #include <cuvs/neighbors/cagra.hpp>
 
 // TODO: Fix these when ivf methods are moved over
@@ -165,7 +167,10 @@ void search_on_composite_index(
   }
 
   if (idx.num_indices() == 1) {
-    cagra::search(res, params, *idx.sub_indices.front(), queries, neighbors, distances);
+    auto wrapper =
+      std::dynamic_pointer_cast<const CagraIndexWrapper<T, IdxT>>(idx.indices().front());
+    RAFT_EXPECTS(wrapper != nullptr, "Composite index contains incompatible index type");
+    cagra::search(res, params, *wrapper->raw_index(), queries, neighbors, distances);
     return;
   }
 
@@ -184,7 +189,9 @@ void search_on_composite_index(
   OutputIdxT stride = K * num_indices;
 
   for (size_t i = 0; i < idx.num_indices(); i++) {
-    const index<T, IdxT>* sub_index = idx.sub_indices[i];
+    auto wrapper = std::dynamic_pointer_cast<const CagraIndexWrapper<T, IdxT>>(idx.indices()[i]);
+    RAFT_EXPECTS(wrapper != nullptr, "Composite index contains incompatible index type");
+    const index<T, IdxT>* sub_index = wrapper->raw_index();
     cagra::search(res, params, *sub_index, queries, neighbors, distances);
     if (offset != 0) {
       raft::linalg::addScalar(

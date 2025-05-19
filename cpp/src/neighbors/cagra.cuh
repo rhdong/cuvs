@@ -409,7 +409,7 @@ composite_index<T, IdxT> make_composite_index(const cagra::merge_params& params,
   if (params.strategy != cagra::MergeStrategy::MERGE_STRATEGY_LOGICAL) {
     RAFT_LOG_WARN("Merge strategy should be MERGE_STRATEGY_LOGICAL.");
   }
-  return composite_index<T, IdxT>(std::move(indices));
+  return cuvs::neighbors::make_composite_index<T, IdxT, index<T, IdxT>, CagraIndexWrapper>(indices);
 }
 
 /** @} */  // end group cagra
