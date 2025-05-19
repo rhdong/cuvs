@@ -239,6 +239,18 @@ if(CUVS_ANN_BENCH_USE_CUVS_CAGRA)
     LINKS
     cuvs
   )
+  ConfigureAnnBench(
+    NAME
+    CUVS_CAGRA_MERGE
+    PATH
+    src/cuvs/cuvs_cagra_merge.cu
+    LINKS
+    cuvs
+  )
+  target_compile_definitions(
+    CUVS_CAGRA_MERGE_ANN_BENCH
+    PUBLIC CUVS_ANN_BENCH_USE_CUVS_CAGRA=${CUVS_ANN_BENCH_USE_CUVS_CAGRA}
+  )
 endif()
 
 if(CUVS_ANN_BENCH_USE_CUVS_CAGRA_HNSWLIB)

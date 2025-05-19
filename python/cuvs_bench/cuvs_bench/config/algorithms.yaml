@@ -37,6 +37,9 @@ cuvs_ivf_pq:
 cuvs_cagra:
   executable: CUVS_CAGRA_ANN_BENCH
   requires_gpu: true
+cuvs_cagra_merge:
+  executable: CUVS_CAGRA_MERGE_ANN_BENCH
+  requires_gpu: true
 cuvs_brute_force:
   executable: CUVS_BRUTE_FORCE_ANN_BENCH
   requires_gpu: true
