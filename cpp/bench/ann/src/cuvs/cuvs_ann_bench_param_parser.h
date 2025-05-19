@@ -36,6 +36,7 @@ extern template class cuvs::bench::cuvs_ivf_pq<uint8_t, int64_t>;
 extern template class cuvs::bench::cuvs_ivf_pq<int8_t, int64_t>;
 #endif
 #if defined(CUVS_ANN_BENCH_USE_CUVS_CAGRA) || defined(CUVS_ANN_BENCH_USE_CUVS_CAGRA_HNSWLIB)
+#include "cuvs_cagra_merge_wrapper.h"
 #include "cuvs_cagra_wrapper.h"
 #endif
 #ifdef CUVS_ANN_BENCH_USE_CUVS_CAGRA
@@ -43,6 +44,10 @@ extern template class cuvs::bench::cuvs_cagra<float, uint32_t>;
 extern template class cuvs::bench::cuvs_cagra<half, uint32_t>;
 extern template class cuvs::bench::cuvs_cagra<uint8_t, uint32_t>;
 extern template class cuvs::bench::cuvs_cagra<int8_t, uint32_t>;
+extern template class cuvs::bench::cuvs_cagra_merge<float, uint32_t>;
+extern template class cuvs::bench::cuvs_cagra_merge<half, uint32_t>;
+extern template class cuvs::bench::cuvs_cagra_merge<uint8_t, uint32_t>;
+extern template class cuvs::bench::cuvs_cagra_merge<int8_t, uint32_t>;
 #endif
 
 #ifdef CUVS_ANN_BENCH_USE_CUVS_MG
@@ -182,6 +187,23 @@ void parse_search_param(const nlohmann::json& conf,
   parse_dynamic_batching_params(conf, param);
 }
 #endif
+
+template <typename T, typename IdxT>
+void parse_build_param(const nlohmann::json& conf,
+                       typename cuvs::bench::cuvs_cagra_merge<T, IdxT>::build_param& param)
+{
+  parse_build_param<T, IdxT>(conf, param.cagra_params);
+  if (conf.contains("split_size")) { param.split_size = conf.at("split_size"); }
+  if (conf.contains("n_splits")) { param.n_splits = conf.at("n_splits"); }
+  if (conf.contains("merge_strategy")) {
+    std::string strategy = conf.at("merge_strategy");
+    if (strategy == "LOGICAL") {
+      param.strategy = cuvs::neighbors::cagra::MergeStrategy::MERGE_STRATEGY_LOGICAL;
+    } else {
+      param.strategy = cuvs::neighbors::cagra::MergeStrategy::MERGE_STRATEGY_PHYSICAL;
+    }
+  }
+}
 
 #if defined(CUVS_ANN_BENCH_USE_CUVS_CAGRA) || defined(CUVS_ANN_BENCH_USE_CUVS_CAGRA_HNSWLIB) || \
   defined(CUVS_ANN_BENCH_USE_CUVS_MG)
