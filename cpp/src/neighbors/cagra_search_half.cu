@@ -33,7 +33,7 @@ namespace cuvs::neighbors::cagra {
   };                                                                                    \
   void search(raft::resources const& handle,                                            \
               cuvs::neighbors::cagra::search_params const& params,                      \
-              const cuvs::neighbors::cagra::composite_index<T, IdxT>& index,            \
+              const cuvs::neighbors::composite_index<T, IdxT>& index,                   \
               raft::device_matrix_view<const T, int64_t, raft::row_major> queries,      \
               raft::device_matrix_view<OutputIdxT, int64_t, raft::row_major> neighbors, \
               raft::device_matrix_view<float, int64_t, raft::row_major> distances,      \
