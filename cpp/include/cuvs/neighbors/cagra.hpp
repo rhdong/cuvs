@@ -2376,20 +2376,99 @@ auto merge(raft::resources const& res,
 auto merge(raft::resources const& res,
            const cuvs::neighbors::cagra::merge_params& params,
            std::vector<cuvs::neighbors::cagra::index<uint8_t, uint32_t>*>& indices)
-  -> cuvs::neighbors::index<uint8_t, uint32_t>;
+  -> cuvs::neighbors::cagra::index<uint8_t, uint32_t>;
 
+/**
+ * @brief Create a composite index from multiple CAGRA indices.
+ *
+ * This function builds a logical composite over multiple CAGRA indices without
+ * merging their data. It allows unified search across all input indices.
+ *
+ * @note All indices must have the same dimension. The input indices are not copied,
+ * and must outlive the returned composite index.
+ *
+ * Example:
+ * @code{.cpp}
+ *   std::vector<cagra::index<float, uint32_t>*> indices{&index0, &index1};
+ *   cagra::merge_params params;
+ *   auto composite = make_composite_index(params, indices);
+ * @endcode
+ *
+ * @param[in] params  Merge parameters (used during search).
+ * @param[in] indices Pointers to input indices with the same dimension.
+ * @return Composite index for unified search.
+ */
 auto make_composite_index(const cagra::merge_params& params,
                           std::vector<cuvs::neighbors::cagra::index<float, uint32_t>*>& indices)
   -> cuvs::neighbors::composite_index<float, uint32_t>;
-
+/**
+ * @brief Create a composite index from multiple CAGRA indices.
+ *
+ * This function builds a logical composite over multiple CAGRA indices without
+ * merging their data. It allows unified search across all input indices.
+ *
+ * @note All indices must have the same dimension. The input indices are not copied,
+ * and must outlive the returned composite index.
+ *
+ * Example:
+ * @code{.cpp}
+ *   std::vector<cagra::index<half, uint32_t>*> indices{&index0, &index1};
+ *   cagra::merge_params params;
+ *   auto composite = make_composite_index(params, indices);
+ * @endcode
+ *
+ * @param[in] params  Merge parameters (used during search).
+ * @param[in] indices Pointers to input indices with the same dimension.
+ * @return Composite index for unified search.
+ */
 auto make_composite_index(const cagra::merge_params& params,
                           std::vector<cuvs::neighbors::cagra::index<half, uint32_t>*>& indices)
   -> cuvs::neighbors::composite_index<half, uint32_t>;
 
+/**
+ * @brief Create a composite index from multiple CAGRA indices.
+ *
+ * This function builds a logical composite over multiple CAGRA indices without
+ * merging their data. It allows unified search across all input indices.
+ *
+ * @note All indices must have the same dimension. The input indices are not copied,
+ * and must outlive the returned composite index.
+ *
+ * Example:
+ * @code{.cpp}
+ *   std::vector<cagra::index<int8_t, uint32_t>*> indices{&index0, &index1};
+ *   cagra::merge_params params;
+ *   auto composite = make_composite_index(params, indices);
+ * @endcode
+ *
+ * @param[in] params  Merge parameters (used during search).
+ * @param[in] indices Pointers to input indices with the same dimension.
+ * @return Composite index for unified search.
+ */
 auto make_composite_index(const cagra::merge_params& params,
                           std::vector<cuvs::neighbors::cagra::index<int8_t, uint32_t>*>& indices)
   -> cuvs::neighbors::composite_index<int8_t, uint32_t>;
 
+/**
+ * @brief Create a composite index from multiple CAGRA indices.
+ *
+ * This function builds a logical composite over multiple CAGRA indices without
+ * merging their data. It allows unified search across all input indices.
+ *
+ * @note All indices must have the same dimension. The input indices are not copied,
+ * and must outlive the returned composite index.
+ *
+ * Example:
+ * @code{.cpp}
+ *   std::vector<cagra::index<uint8_t, uint32_t>*> indices{&index0, &index1};
+ *   cagra::merge_params params;
+ *   auto composite = make_composite_index(params, indices);
+ * @endcode
+ *
+ * @param[in] params  Merge parameters (used during search).
+ * @param[in] indices Pointers to input indices with the same dimension.
+ * @return Composite index for unified search.
+ */
 auto make_composite_index(const cagra::merge_params& params,
                           std::vector<cuvs::neighbors::cagra::index<uint8_t, uint32_t>*>& indices)
   -> cuvs::neighbors::composite_index<uint8_t, uint32_t>;
