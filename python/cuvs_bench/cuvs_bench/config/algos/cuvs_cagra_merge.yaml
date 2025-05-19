@@ -1,0 +1,15 @@
+name: cuvs_cagra_merge
+constraints:
+  build: cuvs_bench.config.algos.constraints.cuvs_cagra_build
+  search: cuvs_bench.config.algos.constraints.cuvs_cagra_search
+groups:
+  base:
+    build:
+      graph_degree: [32, 64]
+      intermediate_graph_degree: [32, 64]
+      graph_build_algo: ["NN_DESCENT"]
+      splits: [2]
+      merge_strategy: ["PHYSICAL", "LOGICAL"]
+    search:
+      itopk: [64]
+      search_width: [1, 2]
