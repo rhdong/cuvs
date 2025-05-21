@@ -17,4 +17,5 @@
 
 namespace cuvs::bench {
 template class cuvs_cagra<float, uint32_t>;
+template class cuvs_cagra_merge<float, uint32_t>;
 }  // namespace cuvs::bench
