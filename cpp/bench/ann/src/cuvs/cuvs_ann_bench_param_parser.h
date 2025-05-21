@@ -43,6 +43,10 @@ extern template class cuvs::bench::cuvs_cagra<float, uint32_t>;
 extern template class cuvs::bench::cuvs_cagra<half, uint32_t>;
 extern template class cuvs::bench::cuvs_cagra<uint8_t, uint32_t>;
 extern template class cuvs::bench::cuvs_cagra<int8_t, uint32_t>;
+extern template class cuvs::bench::cuvs_cagra_merge<float, uint32_t>;
+extern template class cuvs::bench::cuvs_cagra_merge<half, uint32_t>;
+extern template class cuvs::bench::cuvs_cagra_merge<uint8_t, uint32_t>;
+extern template class cuvs::bench::cuvs_cagra_merge<int8_t, uint32_t>;
 #endif
 
 #ifdef CUVS_ANN_BENCH_USE_CUVS_MG
@@ -181,6 +185,25 @@ void parse_search_param(const nlohmann::json& conf,
   // enable dynamic batching
   parse_dynamic_batching_params(conf, param);
 }
+
+template <typename T, typename IdxT>
+void parse_build_param(const nlohmann::json& conf,
+                       typename cuvs::bench::cuvs_cagra_merge<T, IdxT>::build_param& param)
+{
+  ::parse_build_param<T, IdxT>(conf, param.cagra_build_param);
+  if (conf.contains("merge_n_splits")) { param.n_splits = conf.at("merge_n_splits"); }
+  if (conf.contains("merge_strategy")) {
+    std::string s = conf.at("merge_strategy");
+    if (s == "PHYSICAL") {
+      param.strategy = cuvs::neighbors::cagra::MergeStrategy::MERGE_STRATEGY_PHYSICAL;
+    } else if (s == "LOGICAL") {
+      param.strategy = cuvs::neighbors::cagra::MergeStrategy::MERGE_STRATEGY_LOGICAL;
+    } else {
+      THROW("Invalid merge strategy %s", s.c_str());
+    }
+  }
+}
+
 #endif
 
 #if defined(CUVS_ANN_BENCH_USE_CUVS_CAGRA) || defined(CUVS_ANN_BENCH_USE_CUVS_CAGRA_HNSWLIB) || \

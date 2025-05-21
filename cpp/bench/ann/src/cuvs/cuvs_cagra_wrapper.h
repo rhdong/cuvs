@@ -444,4 +444,136 @@ void cuvs_cagra<T, IdxT>::search(
       res, *input_dataset_v_, queries_v, candidate_ixs, k, neighbors, distances, index_->metric());
   }
 }
+
+template <typename T, typename IdxT>
+class cuvs_cagra_merge : public algo<T>, public algo_gpu {
+ public:
+  using search_param_base = typename algo<T>::search_param;
+  using search_param      = typename cuvs_cagra<T, IdxT>::search_param;
+
+  struct build_param {
+    typename cuvs_cagra<T, IdxT>::build_param cagra_build_param;
+    int n_splits = 2;
+    cuvs::neighbors::cagra::MergeStrategy strategy =
+      cuvs::neighbors::cagra::MergeStrategy::MERGE_STRATEGY_PHYSICAL;
+  };
+
+  cuvs_cagra_merge(Metric metric, int dim, const build_param& param)
+    : algo<T>(metric, dim),
+      build_param_(param),
+      merge_param_(param.cagra_build_param.cagra_params)
+  {
+    merge_param_.strategy = param.strategy;
+  }
+
+  void build(const T* dataset, size_t nrow) override
+  {
+    sub_indices_.clear();
+    std::vector<cuvs::neighbors::cagra::index<T, IdxT>*> ptrs;
+    ptrs.reserve(build_param_.n_splits);
+
+    size_t per_split = (nrow + build_param_.n_splits - 1) / build_param_.n_splits;
+    size_t offset    = 0;
+    for (int i = 0; i < build_param_.n_splits && offset < nrow; ++i) {
+      size_t part_sz = std::min(per_split, nrow - offset);
+      build_param_.cagra_build_param.prepare_build_params(
+        raft::make_extents<IdxT>(static_cast<IdxT>(part_sz), static_cast<IdxT>(this->dim_)));
+
+      auto host_view = raft::make_mdspan<const T, IdxT, raft::row_major, true, false>(
+        dataset + offset * this->dim_, raft::make_extents<IdxT>(part_sz, this->dim_));
+      auto dev_view = raft::make_mdspan<const T, IdxT, raft::row_major, false, true>(
+        dataset + offset * this->dim_, raft::make_extents<IdxT>(part_sz, this->dim_));
+      bool on_host = raft::get_device_for_address(dataset) == -1;
+      auto idx     = std::make_shared<cuvs::neighbors::cagra::index<T, IdxT>>(std::move(
+        on_host ? cuvs::neighbors::cagra::build(handle_,
+                                                build_param_.cagra_build_param.cagra_params,
+                                                host_view)
+                : cuvs::neighbors::cagra::build(handle_,
+                                                build_param_.cagra_build_param.cagra_params,
+                                                dev_view)));
+      ptrs.push_back(idx.get());
+      sub_indices_.push_back(std::move(idx));
+      offset += part_sz;
+    }
+
+    if (build_param_.strategy ==
+        cuvs::neighbors::cagra::MergeStrategy::MERGE_STRATEGY_PHYSICAL) {
+      index_ = std::make_shared<cuvs::neighbors::cagra::index<T, IdxT>>(
+        cuvs::neighbors::cagra::merge(handle_, merge_param_, ptrs));
+    } else {
+      composite_index_ = std::make_shared<cuvs::neighbors::cagra::composite_index<T, IdxT>>(
+        cuvs::neighbors::cagra::make_composite_index(merge_param_, ptrs));
+    }
+  }
+
+  void set_search_param(const search_param_base& param, const void* filter_bitset) override
+  {
+    auto sp = dynamic_cast<const search_param&>(param);
+    sp_     = sp;
+    size_t n_items = 0;
+    if (index_) {
+      n_items = index_->size();
+    } else if (composite_index_) {
+      n_items = composite_index_->size();
+    }
+    filter_ = make_cuvs_filter(filter_bitset, n_items);
+  }
+
+  void search(const T* queries,
+              int batch_size,
+              int k,
+              algo_base::index_type* neighbors,
+              float* distances) const override
+  {
+    auto queries_v   = raft::make_device_matrix_view<const T, int64_t>(queries, batch_size, this->dim_);
+    auto neighbors_v = raft::make_device_matrix_view<IdxT, int64_t>((IdxT*)neighbors, batch_size, k);
+    auto dists_v     = raft::make_device_matrix_view<float, int64_t>(distances, batch_size, k);
+
+    if (index_) {
+      cuvs::neighbors::cagra::search(handle_, sp_.p, *index_, queries_v, neighbors_v, dists_v, *filter_);
+    } else if (composite_index_) {
+      cuvs::neighbors::cagra::search(handle_, sp_.p, *composite_index_, queries_v, neighbors_v, dists_v, *filter_);
+    }
+  }
+
+  [[nodiscard]] auto get_sync_stream() const noexcept -> cudaStream_t override
+  {
+    return handle_.get_sync_stream();
+  }
+
+  [[nodiscard]] auto get_preference() const -> algo_property override
+  {
+    algo_property property;
+    property.dataset_memory_type = MemoryType::kHostMmap;
+    property.query_memory_type   = MemoryType::kDevice;
+    return property;
+  }
+
+  void save(const std::string& file) const override
+  {
+    if (index_) { cuvs::neighbors::cagra::serialize(handle_, file, *index_); }
+  }
+
+  void load(const std::string& file) override
+  {
+    index_ = std::make_shared<cuvs::neighbors::cagra::index<T, IdxT>>(handle_);
+    cuvs::neighbors::cagra::deserialize(handle_, file, index_.get());
+  }
+
+  std::unique_ptr<algo<T>> copy() override
+  {
+    return std::make_unique<cuvs_cagra_merge<T, IdxT>>(*this);
+  }
+
+ private:
+  configured_raft_resources handle_{};
+  build_param build_param_;
+  cuvs::neighbors::cagra::merge_params merge_param_;
+  search_param sp_{};
+  std::vector<std::shared_ptr<cuvs::neighbors::cagra::index<T, IdxT>>> sub_indices_;
+  std::shared_ptr<cuvs::neighbors::cagra::index<T, IdxT>> index_;
+  std::shared_ptr<cuvs::neighbors::cagra::composite_index<T, IdxT>> composite_index_;
+  std::shared_ptr<cuvs::neighbors::filtering::base_filter> filter_;
+};
+
 }  // namespace cuvs::bench
