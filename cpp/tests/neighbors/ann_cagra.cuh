@@ -23,6 +23,7 @@
 
 #include <cuvs/distance/distance.hpp>
 #include <cuvs/neighbors/cagra.hpp>
+#include <cuvs/neighbors/composite/merge.hpp>
 #include <raft/core/device_mdspan.hpp>
 #include <raft/core/device_resources.hpp>
 #include <raft/core/host_mdarray.hpp>
@@ -1079,16 +1080,9 @@ class AnnCagraIndexMergeTest : public ::testing::TestWithParam<AnnCagraInputs> {
         search_params.team_size   = ps.team_size;
         search_params.itopk_size  = ps.itopk_size;
 
-        if (merge_params.strategy ==
-            cuvs::neighbors::cagra::MergeStrategy::MERGE_STRATEGY_PHYSICAL) {
-          auto index = cagra::merge(handle_, merge_params, indices);
-          cagra::search(
-            handle_, search_params, index, search_queries_view, indices_out_view, dists_out_view);
-        } else {
-          auto index = cagra::make_composite_index(merge_params, indices);
-          cagra::search(
-            handle_, search_params, index, search_queries_view, indices_out_view, dists_out_view);
-        }
+        auto index = cuvs::neighbors::composite::merge(handle_, merge_params, indices);
+        index->search(
+          handle_, search_params, search_queries_view, indices_out_view, dists_out_view);
 
         raft::update_host(distances_Cagra.data(), distances_dev.data(), queries_size, stream_);
         raft::update_host(indices_Cagra.data(), indices_dev.data(), queries_size, stream_);

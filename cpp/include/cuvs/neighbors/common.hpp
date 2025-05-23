@@ -96,6 +96,9 @@ struct index_params {
 
 struct search_params {};
 
+/** Base merge parameters. */
+struct merge_params {};
+
 /** @} */  // end group neighbors_index
 
 /** Two-dimensional dataset; maybe owning, maybe compressed, maybe strided. */
