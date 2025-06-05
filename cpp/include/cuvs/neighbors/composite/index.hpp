@@ -19,6 +19,7 @@
 #include <cuvs/distance/distance.hpp>
 #include <cuvs/neighbors/index_base.hpp>
 #include <raft/core/device_mdspan.hpp>
+#include <raft/core/error.hpp>
 
 #include <memory>
 #include <vector>
@@ -94,6 +95,22 @@ class CompositeIndex : public IndexBase<T, IdxT, OutputIdxT> {
   {
     return children_.empty() ? cuvs::distance::DistanceType::L2Expanded
                              : children_.front()->metric();
+  }
+
+  void build(
+    const raft::resources& handle,
+    const cuvs::neighbors::index_params& params,
+    raft::device_matrix_view<const value_type, matrix_index_type, raft::row_major> dataset) override
+  {
+    RAFT_FAIL("CompositeIndex does not support build operation. Use pre-built indices instead.");
+  }
+
+  void build(
+    const raft::resources& handle,
+    const cuvs::neighbors::index_params& params,
+    raft::host_matrix_view<const value_type, matrix_index_type, raft::row_major> dataset) override
+  {
+    RAFT_FAIL("CompositeIndex does not support build operation. Use pre-built indices instead.");
   }
 
  private:

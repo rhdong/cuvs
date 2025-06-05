@@ -23,6 +23,7 @@
 
 #include <cuvs/distance/distance.hpp>
 #include <cuvs/neighbors/cagra.hpp>
+#include <cuvs/neighbors/composite/index.hpp>
 #include <cuvs/neighbors/composite/merge.hpp>
 #include <cuvs/neighbors/index_wrappers.hpp>
 #include <raft/core/device_mdspan.hpp>
@@ -1037,34 +1038,33 @@ class AnnCagraIndexMergeTest : public ::testing::TestWithParam<AnnCagraInputs> {
 
         cagra::index<DataT, IdxT> index0(handle_, index_params.metric);
         cagra::index<DataT, IdxT> index1(handle_, index_params.metric);
+
+        auto wrapped_index0 =
+          cuvs::neighbors::cagra::make_index_wrapper<DataT, IdxT, SearchIdxT>(&index0);
+        auto wrapped_index1 =
+          cuvs::neighbors::cagra::make_index_wrapper<DataT, IdxT, SearchIdxT>(&index1);
+
         std::optional<raft::host_matrix<DataT, int64_t>> database_host{std::nullopt};
         if (ps.host_dataset) {
           database_host = raft::make_host_matrix<DataT, int64_t>(handle_, ps.n_rows, ps.dim);
           raft::copy(database_host->data_handle(), database.data(), database.size(), stream_);
-          {
-            auto database_host_view = raft::make_host_matrix_view<const DataT, int64_t>(
-              (const DataT*)database_host->data_handle(), database0_size, ps.dim);
-            index0 = cagra::build(handle_, index_params, database_host_view);
-          }
-          {
-            auto database_host_view = raft::make_host_matrix_view<const DataT, int64_t>(
-              (const DataT*)database_host->data_handle() + database0_size * ps.dim,
-              database1_size,
-              ps.dim);
-            index1 = cagra::build(handle_, index_params, database_host_view);
-          }
+          auto database_host_view0 = raft::make_host_matrix_view<const DataT, int64_t>(
+            (const DataT*)database_host->data_handle(), database0_size, ps.dim);
+          auto database_host_view1 = raft::make_host_matrix_view<const DataT, int64_t>(
+            (const DataT*)database_host->data_handle() + database0_size * ps.dim,
+            database1_size,
+            ps.dim);
+          wrapped_index0->build(handle_, index_params, database_host_view0);
+          wrapped_index1->build(handle_, index_params, database_host_view1);
         } else {
-          index0 = cagra::build(handle_, index_params, database0_view);
-          index1 = cagra::build(handle_, index_params, database1_view);
-        };
+          wrapped_index0->build(handle_, index_params, database0_view);
+          wrapped_index1->build(handle_, index_params, database1_view);
+        }
 
-        // Convert traditional CAGRA indices to wrappers for polymorphic usage
         std::vector<std::shared_ptr<cuvs::neighbors::IndexWrapper<DataT, IdxT, SearchIdxT>>>
-          wrapped_indices;
-        wrapped_indices.push_back(
-          std::make_shared<cuvs::neighbors::cagra::IndexWrapper<DataT, IdxT, SearchIdxT>>(&index0));
-        wrapped_indices.push_back(
-          std::make_shared<cuvs::neighbors::cagra::IndexWrapper<DataT, IdxT, SearchIdxT>>(&index1));
+          indices_vector;
+        indices_vector.push_back(wrapped_index0);
+        indices_vector.push_back(wrapped_index1);
 
         cagra::merge_params merge_params{index_params};
         merge_params.merge_strategy = ps.merge_strategy;
@@ -1082,9 +1082,9 @@ class AnnCagraIndexMergeTest : public ::testing::TestWithParam<AnnCagraInputs> {
         search_params.team_size   = ps.team_size;
         search_params.itopk_size  = ps.itopk_size;
 
-        auto index = cuvs::neighbors::composite::merge<DataT, IdxT, SearchIdxT>(
-          handle_, merge_params, wrapped_indices);
-        index->search(
+        auto merged_index = cuvs::neighbors::composite::merge<DataT, IdxT, SearchIdxT>(
+          handle_, merge_params, indices_vector);
+        merged_index->search(
           handle_, search_params, search_queries_view, indices_out_view, dists_out_view);
 
         raft::update_host(distances_Cagra.data(), distances_dev.data(), queries_size, stream_);

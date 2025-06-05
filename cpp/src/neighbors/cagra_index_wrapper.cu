@@ -23,7 +23,14 @@ namespace cuvs::neighbors::cagra {
 
 template <typename T, typename IdxT, typename OutputIdxT>
 IndexWrapper<T, IdxT, OutputIdxT>::IndexWrapper(cuvs::neighbors::cagra::index<T, IdxT>* idx)
-  : index_(idx)
+  : index_(idx), owns_index_(false)
+{
+}
+
+template <typename T, typename IdxT, typename OutputIdxT>
+IndexWrapper<T, IdxT, OutputIdxT>::IndexWrapper(cuvs::neighbors::cagra::index<T, IdxT>* idx,
+                                                bool owns_index)
+  : index_(idx), owns_index_(owns_index)
 {
 }
 
@@ -55,15 +62,11 @@ cuvs::distance::DistanceType IndexWrapper<T, IdxT, OutputIdxT>::metric() const n
 }
 
 template <typename T, typename IdxT, typename OutputIdxT>
-std::shared_ptr<
-  cuvs::neighbors::IndexBase<typename IndexWrapper<T, IdxT, OutputIdxT>::value_type,
-                             typename IndexWrapper<T, IdxT, OutputIdxT>::index_type,
-                             typename IndexWrapper<T, IdxT, OutputIdxT>::out_index_type>>
+std::shared_ptr<cuvs::neighbors::IndexBase<T, IdxT, OutputIdxT>>
 IndexWrapper<T, IdxT, OutputIdxT>::merge(
   const raft::resources& handle,
   const cuvs::neighbors::merge_params& params,
-  const std::vector<
-    std::shared_ptr<cuvs::neighbors::IndexBase<value_type, index_type, out_index_type>>>&
+  const std::vector<std::shared_ptr<cuvs::neighbors::IndexBase<T, IdxT, OutputIdxT>>>&
     other_indices) const
 {
   const auto* cagra_params = dynamic_cast<const cuvs::neighbors::cagra::merge_params*>(&params);
@@ -95,6 +98,28 @@ IndexWrapper<T, IdxT, OutputIdxT>::merge(
   }
 
   RAFT_FAIL("Invalid merge strategy");
+}
+
+template <typename T, typename IdxT, typename OutputIdxT>
+void IndexWrapper<T, IdxT, OutputIdxT>::build(
+  const raft::resources& handle,
+  const cuvs::neighbors::index_params& params,
+  raft::device_matrix_view<const value_type, matrix_index_type, raft::row_major> dataset)
+{
+  const auto& cagra_params = static_cast<const cuvs::neighbors::cagra::index_params&>(params);
+  auto new_index           = cuvs::neighbors::cagra::build(handle, cagra_params, dataset);
+  *index_                  = std::move(new_index);
+}
+
+template <typename T, typename IdxT, typename OutputIdxT>
+void IndexWrapper<T, IdxT, OutputIdxT>::build(
+  const raft::resources& handle,
+  const cuvs::neighbors::index_params& params,
+  raft::host_matrix_view<const value_type, matrix_index_type, raft::row_major> dataset)
+{
+  const auto& cagra_params = static_cast<const cuvs::neighbors::cagra::index_params&>(params);
+  auto new_index           = cuvs::neighbors::cagra::build(handle, cagra_params, dataset);
+  *index_                  = std::move(new_index);
 }
 
 template class IndexWrapper<float, uint32_t, uint32_t>;

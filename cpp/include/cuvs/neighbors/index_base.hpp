@@ -18,6 +18,7 @@
 
 #include <cuvs/neighbors/common.hpp>
 #include <raft/core/device_mdspan.hpp>
+#include <raft/core/host_mdspan.hpp>
 #include <raft/core/resources.hpp>
 
 #include <memory>
@@ -56,12 +57,35 @@ struct IndexBase {
   auto operator=(IndexBase&&) -> IndexBase&      = default;
   virtual ~IndexBase()                           = default;
 
-  /* Future implementation:
+  /**
+   * @brief Build the index from the dataset (device memory).
+   *
+   * Builds the index structure from device dataset using the specified parameters.
+   * This is a pure virtual function that must be implemented by derived classes.
+   *
+   * @param[in] handle CUDA resources for executing operations
+   * @param[in] params Build parameters specific to the index implementation
+   * @param[in] dataset Device matrix of vectors to index [n_rows, dim]
+   */
   virtual void build(
     const raft::resources& handle,
-    const cuvs::neighbors::build_params& params,
+    const cuvs::neighbors::index_params& params,
     raft::device_matrix_view<const value_type, matrix_index_type, raft::row_major> dataset) = 0;
-  */
+
+  /**
+   * @brief Build the index from the dataset (host memory).
+   *
+   * Builds the index structure from host dataset using the specified parameters.
+   * This is a pure virtual function that must be implemented by derived classes.
+   *
+   * @param[in] handle CUDA resources for executing operations
+   * @param[in] params Build parameters specific to the index implementation
+   * @param[in] dataset Host matrix of vectors to index [n_rows, dim]
+   */
+  virtual void build(
+    const raft::resources& handle,
+    const cuvs::neighbors::index_params& params,
+    raft::host_matrix_view<const value_type, matrix_index_type, raft::row_major> dataset) = 0;
 
   /**
    * @brief Perform approximate nearest neighbor search.
