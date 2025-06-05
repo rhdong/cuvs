@@ -106,6 +106,13 @@ void IndexWrapper<T, IdxT, OutputIdxT>::build(
   const cuvs::neighbors::index_params& params,
   raft::device_matrix_view<const value_type, matrix_index_type, raft::row_major> dataset)
 {
+  // Only allow building on owned indices to prevent resource leaks
+  if (!owns_index_) {
+    RAFT_FAIL(
+      "Cannot build on IndexWrapper that doesn't own the index. "
+      "Create IndexWrapper with owns_index=true or use a pre-built index.");
+  }
+
   const auto& cagra_params = static_cast<const cuvs::neighbors::cagra::index_params&>(params);
   auto new_index           = cuvs::neighbors::cagra::build(handle, cagra_params, dataset);
   *index_                  = std::move(new_index);
@@ -117,6 +124,13 @@ void IndexWrapper<T, IdxT, OutputIdxT>::build(
   const cuvs::neighbors::index_params& params,
   raft::host_matrix_view<const value_type, matrix_index_type, raft::row_major> dataset)
 {
+  // Only allow building on owned indices to prevent resource leaks
+  if (!owns_index_) {
+    RAFT_FAIL(
+      "Cannot build on IndexWrapper that doesn't own the index. "
+      "Create IndexWrapper with owns_index=true or use a pre-built index.");
+  }
+
   const auto& cagra_params = static_cast<const cuvs::neighbors::cagra::index_params&>(params);
   auto new_index           = cuvs::neighbors::cagra::build(handle, cagra_params, dataset);
   *index_                  = std::move(new_index);
