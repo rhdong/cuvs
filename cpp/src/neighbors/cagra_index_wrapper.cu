@@ -94,7 +94,7 @@ IndexWrapper<T, IdxT, OutputIdxT>::merge(
   } else if (cagra_params->strategy() == cuvs::neighbors::MergeStrategy::MERGE_STRATEGY_PHYSICAL) {
     auto merged_index = cuvs::neighbors::cagra::merge(handle, *cagra_params, cagra_indices);
     auto* idx         = new decltype(merged_index)(std::move(merged_index));
-    return std::make_shared<IndexWrapper<T, IdxT, OutputIdxT>>(idx);
+    return std::make_shared<IndexWrapper<T, IdxT, OutputIdxT>>(idx, true);
   }
 
   RAFT_FAIL("Invalid merge strategy");
